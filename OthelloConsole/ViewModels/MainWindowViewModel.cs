@@ -14,6 +14,10 @@ public partial class MainWindowViewModel : ViewModelBase
     private int                   _consecutivePassCount = 0;
     private (int row, int col)    _lastMove            = (-1, -1);
 
+    // ─── 棋譜の記録(学習用データ集め) ─────────────────────────────
+    private readonly string _weightsSource;
+    private GameRecord?     _currentRecord;
+
     // ─── バインディングプロパティ ───────────────────────────────
     [ObservableProperty] private int    _blackScore;
     [ObservableProperty] private int    _whiteScore;
@@ -58,8 +62,10 @@ public partial class MainWindowViewModel : ViewModelBase
 
     public MainWindowViewModel()
     {
+        bool hasBestWeights = File.Exists("weights/best_weights.json");
+        _weightsSource = hasBestWeights ? "best_weights.json" : "default";
         _ai = new OthelloAI(
-            File.Exists("weights/best_weights.json")
+            hasBestWeights
                 ? WeightSet.Load("weights/best_weights.json")
                 : WeightSet.Default());
 
@@ -88,6 +94,13 @@ public partial class MainWindowViewModel : ViewModelBase
     [RelayCommand]
     private async Task NewGame()
     {
+        // 対局の途中で「ゲーム開始」を押されたら、そこまでの棋譜を途中終了として残す
+        if (IsGameRunning && _currentRecord is { Moves.Count: > 0 })
+        {
+            var (b, w) = OthelloSystem.Counting(_gameData._tiles);
+            FinishRecord("aborted", "", b, w);
+        }
+
         _consecutivePassCount = 0;
         _lastMove             = (-1, -1);
         _lastGameResult       = GameResult.None;
@@ -113,6 +126,16 @@ public partial class MainWindowViewModel : ViewModelBase
         _gameData._tiles[mid,     mid - 1] = 1;
         _gameData._tiles[mid,     mid]     = 2;
 
+        _currentRecord = new GameRecord
+        {
+            StartedAt     = DateTimeOffset.Now.ToString("o"),
+            GameMode      = SelectedGameMode.ToString(),
+            AiStrength    = SelectedAiStrength.ToString(),
+            // 先手・後手に関わらず、人間はいつも _turnNum == 1(黒)。AIが先手のときは白から打ち始める
+            HumanColor    = SelectedGameMode == GameMode.PlayervsAI ? HumanColorName() : "",
+            WeightsSource = _weightsSource,
+        };
+
         IsGameRunning = true;
         SyncBoardToUI();
         SyncScoreToUI();
@@ -134,10 +157,11 @@ public partial class MainWindowViewModel : ViewModelBase
         => IsPlayerTurn && IsGameRunning && !IsAiThinking;
 
     // ─── 石を置いてターンを進める ─────────────────────────────────
-    private async Task PlaceAndAdvanceAsync(int row, int col)
+    private async Task PlaceAndAdvanceAsync(int row, int col, long? thinkMs = null)
     {
         IsPlayerTurn = false;
 
+        RecordMove(isPass: false, row, col, thinkMs);
         OthelloSystem.PlacePiece(row, col, _gameData);
         _lastMove = (row, col);
         _consecutivePassCount = 0;
@@ -161,6 +185,7 @@ public partial class MainWindowViewModel : ViewModelBase
         if (_validMoves.Count == 0)
         {
             _consecutivePassCount++;
+            RecordMove(isPass: true, 0, 0, null);
             string passer = _gameData._turnNum == 1 ? "黒" : "白";
             StatusMessage        = $"{passer} は置ける場所がありません。パスします。";
             CurrentTurnText      = $"{passer} パス";
@@ -205,6 +230,7 @@ public partial class MainWindowViewModel : ViewModelBase
         StatusMessage   = "しばらくお待ちください";
 
         (int x, int y) aiMove;
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             var snapshot = _gameData.Clone();
@@ -214,12 +240,13 @@ public partial class MainWindowViewModel : ViewModelBase
         {
             IsAiThinking = false;
         }
+        long thinkMs = stopwatch.ElapsedMilliseconds;
 
         CurrentTurnText = $"AI（{color}）が ({aiMove.x}, {aiMove.y}) に置きました";
         StatusMessage   = "";
         await Task.Delay(600);
 
-        await PlaceAndAdvanceAsync(aiMove.x, aiMove.y);
+        await PlaceAndAdvanceAsync(aiMove.x, aiMove.y, thinkMs);
     }
 
     // ─── ゲーム終了判定 ─────────────────────────────────────────
@@ -244,14 +271,19 @@ public partial class MainWindowViewModel : ViewModelBase
         CurrentTurnText = "ゲーム終了";
         StatusMessage   = $"{result}（黒 {black} vs 白 {white}）";
 
-        if (SelectedGameMode == GameMode.PlayervsAI)
+        string winner = black > white ? "black" : white > black ? "white" : "draw";
+        string humanColor = _currentRecord?.HumanColor ?? "";
+        string humanResult = humanColor == "" ? ""
+                           : winner == "draw" ? "draw"
+                           : winner == humanColor ? "win" : "loss";
+        FinishRecord(humanResult, winner, black, white);
+
+        if (_gameData._gameMode == GameMode.PlayervsAI)
         {
-            bool playerIsBlack = IsPlayerFirst;
-            bool playerWon  = (playerIsBlack && black > white) || (!playerIsBlack && white > black);
-            bool playerLost = (playerIsBlack && white > black) || (!playerIsBlack && black > white);
-            if      (playerWon)  { PlayerWins++;   _lastGameResult = GameResult.Win; }
-            else if (playerLost) { PlayerLosses++; _lastGameResult = GameResult.Loss; }
-            else                 { PlayerDraws++;  _lastGameResult = GameResult.Draw; }
+            // 以前は「先手なら黒」としていたが、後手を選んでも人間は黒なので、勝敗が逆に数えられていた
+            if      (humanResult == "win")  { PlayerWins++;   _lastGameResult = GameResult.Win; }
+            else if (humanResult == "loss") { PlayerLosses++; _lastGameResult = GameResult.Loss; }
+            else                            { PlayerDraws++;  _lastGameResult = GameResult.Draw; }
 
             new BattleRecord { Wins = PlayerWins, Losses = PlayerLosses, Draws = PlayerDraws }
                 .Save(RecordsPath);
@@ -259,6 +291,46 @@ public partial class MainWindowViewModel : ViewModelBase
         }
 
         return true;
+    }
+
+    // ─── 棋譜の記録 ─────────────────────────────────────────────
+    /// <summary>いまの盤面の手番から、人間の色("black" / "white")を求める。</summary>
+    private string HumanColorName()
+    {
+        int humanTurnNum = _gameData._gameTurn == GameTurn.Player ? _gameData._turnNum : 3 - _gameData._turnNum;
+        return humanTurnNum == 1 ? "black" : "white";
+    }
+
+    /// <summary>いまの手番の1手(またはパス)を棋譜に足す。石を置く前・手番を変える前に呼ぶ。</summary>
+    private void RecordMove(bool isPass, int row, int col, long? thinkMs)
+    {
+        if (_currentRecord is null) return;
+
+        _currentRecord.Moves.Add(new MoveRecord
+        {
+            Turn     = _currentRecord.Moves.Count + 1,
+            Color    = _gameData._turnNum == 1 ? "black" : "white",
+            Actor    = IsHumanTurn() ? "human" : "ai",
+            IsPass   = isPass,
+            Row      = row,
+            Col      = col,
+            Notation = isPass ? "pass" : GameRecord.ToNotation(row, col),
+            ThinkMs  = thinkMs,
+        });
+    }
+
+    /// <summary>棋譜に結果を書いてファイルへ書き足し、記録中の棋譜を手放す。</summary>
+    private void FinishRecord(string result, string winner, int black, int white)
+    {
+        if (_currentRecord is null) return;
+
+        _currentRecord.EndedAt    = DateTimeOffset.Now.ToString("o");
+        _currentRecord.Result     = result;
+        _currentRecord.Winner     = winner;
+        _currentRecord.BlackCount = black;
+        _currentRecord.WhiteCount = white;
+        _currentRecord.Append();
+        _currentRecord = null;
     }
 
     // ─── 現在ターンが人間か ──────────────────────────────────────
