@@ -8,3 +8,5 @@ obj/
 
 # Log files
 Log/
+# 配布物
+publish/

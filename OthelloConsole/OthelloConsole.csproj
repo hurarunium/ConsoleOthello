@@ -17,4 +17,9 @@
                       Condition="'$(Configuration)' == 'Debug'" />
   </ItemGroup>
 
+  <!-- 配布物(publish)にも学習済みの重みを入れる。exeをダブルクリックで起動したときに読めるようにする -->
+  <ItemGroup>
+    <None Include="weights/best_weights.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
