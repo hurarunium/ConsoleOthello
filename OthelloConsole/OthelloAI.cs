@@ -317,6 +317,8 @@ public class OthelloAI
     // 完全読みの値は、手番から見た最終の石数の差(-64〜64。空きマスは数えない)。
     // 中盤の探索の点数(WinScore + 石数差)とは別の尺度で、置換表は手ごとに空にするので混ざらない。
 
+    /// <summary>完全読みの値(石数の差)の最大</summary>
+    private const int MaxDiscDiff = 64;
     /// <summary>空きマスがこの数以下になったら、置換表と並べ替えを使わない小さな探索に切り替える</summary>
     private const int SmallSolveEmpties = 6;
     /// <summary>空きマスがこの数以上の局面では、評価関数も使って手を並べる(未満は相手の打てる手の数だけで並べる)</summary>
@@ -357,6 +359,7 @@ public class OthelloAI
             }
             if (score > bestScore) { bestScore = score; bestMove = moves[i]; }
             alpha = Math.Max(alpha, score);
+            if (alpha >= MaxDiscDiff) break; // これより良い値はない
         }
 
         string result = bestScore > 0 ? $"勝ち(+{bestScore}石差)" : bestScore < 0 ? $"負け({bestScore}石差)" : "引き分け";
@@ -367,6 +370,11 @@ public class OthelloAI
     /// <summary>完全読み(置換表・ETC・手の並べ替えつきの NegaScout)。値は手番から見た最終の石数の差</summary>
     private int Solve(BitBoard board, int alpha, int beta)
     {
+        // 値は -64〜64 にしかならないので、窓をその範囲に絞る(64勝ちが見つかったら、ほかの手を読まずに済む)
+        if (beta > MaxDiscDiff) beta = MaxDiscDiff;
+        if (alpha < -MaxDiscDiff) alpha = -MaxDiscDiff;
+        if (alpha >= beta) return alpha;
+
         int empties = board.EmptyCount;
         if (empties <= SmallSolveEmpties) return SolveSmall(board, alpha, beta, empties);
 
@@ -450,7 +458,7 @@ public class OthelloAI
     /// <summary>
     /// 完全読みで読む手の順番を決めて moves に書き、手の数を返す。
     /// 置換表の最善手を先頭にし、残りは「相手の打てる手が少ない手」を先にする(速さ優先)。
-    /// 空きマスが多い局面では、評価関数(相手から見た値。小さいほど自分に良い)も足す
+    /// 空きマスが多い局面では、評価関数(相手から見た値。小さいほど自分に良い)も足す。残り16マス以上では2手読みの値を使う
     /// </summary>
     private int OrderSolveMoves(BitBoard board, ulong movesBit, int ttBestMove, Span<int> moves)
     {
@@ -470,10 +478,15 @@ public class OthelloAI
             else
             {
                 BitBoard next = board.DoMove(move);
-                // 相手の打てる手の数(角は数えにくくするため2倍)。値が小さいほど先に読む
+                // 相手の打てる手の数(角は2倍に数える)。値が小さいほど先に読む
                 ulong opponentMoves = next.GetMoves();
-                key = (BitOperations.PopCount(opponentMoves) + BitOperations.PopCount(opponentMoves & CornerMask)) * 1024;
-                if (useEval) key += _evaluator.Evaluate(next);
+                key = (BitOperations.PopCount(opponentMoves) + BitOperations.PopCount(opponentMoves & CornerMask)) * OrderingMobilityWeight;
+                if (useEval)
+                {
+                    key += board.EmptyCount >= ShallowSearchOrderingEmpties
+                        ? OrderingSearch(next, 1, -Inf, Inf)
+                        : _evaluator.Evaluate(next);
+                }
             }
 
             // 挿入ソート(手の数は多くても30程度なので十分)
@@ -493,6 +506,41 @@ public class OthelloAI
 
     private const ulong CornerMask = 0x8100000000000081UL;
 
+    /// <summary>手の並べ替えで、相手の打てる手1つあたりに足す値(評価値は石数×32。実戦の局面で比べて決めた)</summary>
+    private const int OrderingMobilityWeight = 128;
+    /// <summary>空きマスがこの数以上の局面では、2手読み(子の局面から1手読み)の値で手を並べる</summary>
+    private const int ShallowSearchOrderingEmpties = 16;
+
+    /// <summary>手の並べ替えに使う浅い探索(評価関数のαβ。置換表は使わない)。値は手番から見た評価値</summary>
+    private int OrderingSearch(BitBoard board, int depth, int alpha, int beta)
+    {
+        if (depth <= 0) return _evaluator.Evaluate(board);
+        ulong movesBit = board.GetMoves();
+        if (movesBit == 0)
+        {
+            var passed = new BitBoard(board.Opponent, board.Player);
+            if (passed.GetMoves() == 0) return FinalScore(board);
+            return -OrderingSearch(passed, depth - 1, -beta, -alpha);
+        }
+        int best = -Inf;
+        while (movesBit != 0)
+        {
+            int move = BitOperations.TrailingZeroCount(movesBit);
+            movesBit &= movesBit - 1;
+            int score = -OrderingSearch(board.DoMove(move), depth - 1, -beta, -alpha);
+            if (score > best)
+            {
+                best = score;
+                if (score > alpha)
+                {
+                    alpha = score;
+                    if (alpha >= beta) break;
+                }
+            }
+        }
+        return best;
+    }
+
     /// <summary>
     /// 残りの少ない局面の完全読み。合法手を作らず、空きマスに順に置いてみる。
     /// 空きマスが奇数個の区画から先に打つ(偶数理論)。置換表は使わない(局面が多く、引く手間のほうが大きい)
@@ -500,6 +548,10 @@ public class OthelloAI
     private int SolveSmall(BitBoard board, int alpha, int beta, int empties)
     {
         _recursionsCount++;
+        if (beta > MaxDiscDiff) beta = MaxDiscDiff;
+        if (alpha < -MaxDiscDiff) alpha = -MaxDiscDiff;
+        if (alpha >= beta) return alpha;
+
         ulong empty = ~(board.Player | board.Opponent);
         if (empties == 1) return SolveLastMove(board, empty);
 
