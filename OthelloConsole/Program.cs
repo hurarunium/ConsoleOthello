@@ -17,6 +17,11 @@ internal class Program
             AnalyzeMode.Run(args);
             return;
         }
+        if (args.Contains("--pattern-check"))
+        {
+            PatternCheck.Run(args);
+            return;
+        }
         if (args.Contains("--search-check"))
         {
             SearchCheck.Run(args);

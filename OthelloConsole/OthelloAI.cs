@@ -99,6 +99,9 @@ public class OthelloAI
 
     private int _maxDepth;
     private int _recursionsCount;
+
+    /// <summary>直前の1手で読んだ局面の数(探索の速さを比べるため)</summary>
+    public int LastNodeCount => _recursionsCount;
     private int _abCutCount;           // αβカット発生回数
     private int _pvsResearchCount;     // PVS再探索回数
     private bool _perfSolveTriggered;  // 完全読みに移行したか
