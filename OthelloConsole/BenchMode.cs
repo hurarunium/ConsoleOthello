@@ -187,7 +187,7 @@ public static class BenchMode
                 moves.Add(move);
             }
             if (moves.Count != openingMoves) continue;
-            if (seen.Add(ToTranscript(moves))) openings.Add(moves);
+            if (seen.Add(GameTranscript.Format(moves))) openings.Add(moves);
         }
         return openings;
     }
@@ -200,7 +200,7 @@ public static class BenchMode
         var transcript = new List<(int row, int col)>();
         var result = new BenchGameResult
         {
-            Opening = ToTranscript(opening),
+            Opening = GameTranscript.Format(opening),
             OurColor = ourTurnNum == 1 ? "black" : "white",
         };
 
@@ -247,7 +247,7 @@ public static class BenchMode
             {
                 string who = isOurTurn ? "自分のAI" : "Egaroucid";
                 throw new InvalidOperationException(
-                    $"{who}が合法でない手 {GameRecord.ToNotation(chosen.row, chosen.col)} を返しました(手順: {ToTranscript(transcript)})。");
+                    $"{who}が合法でない手 {GameRecord.ToNotation(chosen.row, chosen.col)} を返しました(手順: {GameTranscript.Format(transcript)})。");
             }
 
             PlacePiece(chosen.row, chosen.col, gameData);
@@ -262,7 +262,7 @@ public static class BenchMode
         result.Result = result.OurDiscs > result.EgaroucidDiscs ? "win"
                       : result.OurDiscs < result.EgaroucidDiscs ? "loss"
                       : "draw";
-        result.Transcript = ToTranscript(transcript);
+        result.Transcript = GameTranscript.Format(transcript);
         return result;
     }
 
@@ -283,9 +283,6 @@ public static class BenchMode
         gameData._tiles[4, 3] = 1; gameData._tiles[4, 4] = 2;
         return gameData;
     }
-
-    private static string ToTranscript(IEnumerable<(int row, int col)> moves)
-        => string.Concat(moves.Select(move => GameRecord.ToNotation(move.row, move.col)));
 
     private static void PrintProgress(List<BenchGameResult> results, int totalGames)
     {

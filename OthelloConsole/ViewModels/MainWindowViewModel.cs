@@ -327,7 +327,11 @@ public partial class MainWindowViewModel : ViewModelBase
         _currentRecord.Winner     = winner;
         _currentRecord.BlackCount = black;
         _currentRecord.WhiteCount = white;
+        _currentRecord.Transcript = GameTranscript.Format(
+            _currentRecord.Moves.Where(m => !m.IsPass).Select(m => (m.Row, m.Col)));
         _currentRecord.Append();
+        // f5d6形式の棋譜は、最後まで打った対局だけを残す(途中でやめた局は手順が途中で終わるため)
+        if (result != "aborted") GameTranscript.Append(_currentRecord.Transcript);
         _currentRecord = null;
     }
 

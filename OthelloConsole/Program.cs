@@ -7,6 +7,11 @@ internal class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (args.Contains("--convert-records"))
+        {
+            ConvertRecordsMode.Run(args);
+            return;
+        }
         if (args.Contains("--analyze"))
         {
             AnalyzeMode.Run(args);

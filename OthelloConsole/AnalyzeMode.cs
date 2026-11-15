@@ -7,8 +7,11 @@ using static OthelloSystem;
 /// 棋譜の各局面で、Egaroucidに全部の合法手を評価させ、打った手が最善手からどれだけ損したかを出す。
 /// AIが打った手については、今のAI(同じ強さ)ならどの手を選ぶかも並べ、悪手が直っているかを見る。
 ///
+/// f5d6形式の棋譜(.txt、1行1局)も読める(企画 P-08)。f5d6には人間かAIかの情報がないので、両方の色の手を分析する。
+///
 /// 例: --analyze Data/collected/game_records.jsonl          (人間が勝った局をすべて)
 ///     --analyze Data/collected/game_records.jsonl --index 39 --level 18
+///     --analyze data/game_records.txt                       (全部の局)
 /// </summary>
 public static class AnalyzeMode
 {
@@ -18,6 +21,8 @@ public static class AnalyzeMode
     private const int PerfectSolveEmpties = 18;
     private const string DefaultEgaroucidPath = "../external/egaroucid/Egaroucid-console_v7.8.2/bin/Egaroucid_for_Console.out";
     private const string WeightsPath = "weights/best_weights.json";
+    /// <summary>f5d6形式の棋譜を分析するときの、今のAIの強さ(Phase 4でレベルに切り替える)</summary>
+    private const AIStrength TranscriptAiStrength = AIStrength.Professional;
 
     /// <summary>1手分の分析結果</summary>
     private sealed record MoveAnalysis(
@@ -41,8 +46,11 @@ public static class AnalyzeMode
                                    .Select(pair => int.Parse(args[pair.i + 1]))
                                    .ToHashSet();
 
-        List<(int lineNumber, GameRecord record)> games = LoadGames(recordsPath)
-            .Where(game => indexes.Count > 0 ? indexes.Contains(game.lineNumber) : game.record.Result == "win")
+        bool isTranscriptFile = Path.GetExtension(recordsPath).Equals(".txt", StringComparison.OrdinalIgnoreCase);
+        // JSONLは、指定がなければ人間が勝った局だけ。f5d6形式は勝ち負けがわからないので、指定がなければ全部の局
+        List<(int lineNumber, GameRecord record)> games = (isTranscriptFile ? LoadTranscripts(recordsPath) : LoadGames(recordsPath))
+            .Where(game => indexes.Count > 0 ? indexes.Contains(game.lineNumber)
+                                             : isTranscriptFile || game.record.Result == "win")
             .ToList();
         if (games.Count == 0)
         {
@@ -103,6 +111,40 @@ public static class AnalyzeMode
         }
     }
 
+    /// <summary>
+    /// f5d6形式の棋譜を読む。行番号(1始まり)と一緒に返す。
+    /// 人間かAIかはわからないので Actor は空にし、強さは TranscriptAiStrength にする
+    /// </summary>
+    private static IEnumerable<(int lineNumber, GameRecord record)> LoadTranscripts(string path)
+    {
+        int lineNumber = 0;
+        foreach (string line in File.ReadLines(path))
+        {
+            lineNumber++;
+            if (string.IsNullOrWhiteSpace(line)) continue;
+
+            GameTranscript.ReplayResult replay = GameTranscript.Replay(line);
+            var (black, white) = Counting(replay.FinalTiles);
+            var record = new GameRecord
+            {
+                AiStrength = TranscriptAiStrength.ToString(),
+                BlackCount = black,
+                WhiteCount = white,
+                Transcript = line.Trim(),
+                Moves = replay.Steps.Select((step, i) => new MoveRecord
+                {
+                    Turn = i + 1,
+                    Color = step.TurnNum == 1 ? "black" : "white",
+                    IsPass = step.IsPass,
+                    Row = step.Row,
+                    Col = step.Col,
+                    Notation = step.IsPass ? "pass" : GameRecord.ToNotation(step.Row, step.Col),
+                }).ToList(),
+            };
+            yield return (lineNumber, record);
+        }
+    }
+
     /// <summary>1局を初手から並べ直し、パス以外の各手を分析する</summary>
     private static List<MoveAnalysis> AnalyzeGame(GameRecord record, EgaroucidClient egaroucid, WeightSet weights)
     {
@@ -133,7 +175,8 @@ public static class AnalyzeMode
 
             string? currentAiMove = null;
             int? currentAiValue = null;
-            if (move.Actor == "ai")
+            // 人間の手は今のAIと比べない。f5d6形式の棋譜(Actor が空)は、両方の色の手を比べる
+            if (move.Actor != "human")
             {
                 // 置換表などを持ち越さないよう、毎回新しく作る
                 (int row, int col) chosen = new OthelloAI(weights).AI(gameData.Clone(), false);
@@ -155,24 +198,40 @@ public static class AnalyzeMode
 
     private static void AppendGameReport(StringBuilder report, int lineNumber, GameRecord record, List<MoveAnalysis> moves)
     {
-        string humanColor = record.HumanColor == "black" ? "黒" : "白";
-        report.AppendLine($"## {lineNumber}行目: {record.AiStrength}、人間は{humanColor}、"
-                        + $"結果 黒{record.BlackCount} − 白{record.WhiteCount}({record.StartedAt[..16]})");
+        bool isTranscript = record.Moves.All(m => m.Actor == "");
+        string players = isTranscript ? "f5d6形式(人間かAIかは不明)"
+                       : $"{record.AiStrength}、人間は{(record.HumanColor == "black" ? "黒" : "白")}";
+        string startedAt = record.StartedAt.Length >= 16 ? $"({record.StartedAt[..16]})" : "";
+        report.AppendLine($"## {lineNumber}行目: {players}、結果 黒{record.BlackCount} − 白{record.WhiteCount}{startedAt}");
         report.AppendLine();
 
-        List<MoveAnalysis> aiMoves = moves.Where(m => m.Actor == "ai").ToList();
-        List<MoveAnalysis> humanMoves = moves.Where(m => m.Actor == "human").ToList();
-        List<MoveAnalysis> blunders = aiMoves.Where(m => m.Loss >= BlunderThreshold).ToList();
-
-        report.AppendLine($"- AIの損の合計: {aiMoves.Sum(m => m.Loss)}石({aiMoves.Count}手、悪手{blunders.Count}手。"
-                        + $"うち完全読みの範囲〈残り{PerfectSolveEmpties}マス以下〉 {blunders.Count(m => m.Empties <= PerfectSolveEmpties)}手)");
-        report.AppendLine($"- 今のAIなら: 損の合計 {aiMoves.Sum(m => m.CurrentAiLoss ?? 0)}石"
-                        + $"(悪手 {aiMoves.Count(m => m.CurrentAiLoss >= BlunderThreshold)}手)");
-        report.AppendLine($"- 人間の損の合計: {humanMoves.Sum(m => m.Loss)}石({humanMoves.Count}手)");
+        // 表に出すのは、今のAIと比べる手(AIの手。f5d6形式なら全部の手)
+        List<MoveAnalysis> targetMoves = moves.Where(m => m.Actor != "human").ToList();
+        if (isTranscript)
+        {
+            foreach (string color in new[] { "black", "white" })
+            {
+                List<MoveAnalysis> colorMoves = moves.Where(m => m.Color == color).ToList();
+                report.AppendLine($"- {(color == "black" ? "黒" : "白")}の損の合計: {colorMoves.Sum(m => m.Loss)}石"
+                                + $"({colorMoves.Count}手、悪手{colorMoves.Count(m => m.Loss >= BlunderThreshold)}手)");
+            }
+            report.AppendLine($"- 今のAI({TranscriptAiStrength})なら: 損の合計 {targetMoves.Sum(m => m.CurrentAiLoss ?? 0)}石"
+                            + $"(悪手 {targetMoves.Count(m => m.CurrentAiLoss >= BlunderThreshold)}手)");
+        }
+        else
+        {
+            List<MoveAnalysis> humanMoves = moves.Where(m => m.Actor == "human").ToList();
+            List<MoveAnalysis> blunders = targetMoves.Where(m => m.Loss >= BlunderThreshold).ToList();
+            report.AppendLine($"- AIの損の合計: {targetMoves.Sum(m => m.Loss)}石({targetMoves.Count}手、悪手{blunders.Count}手。"
+                            + $"うち完全読みの範囲〈残り{PerfectSolveEmpties}マス以下〉 {blunders.Count(m => m.Empties <= PerfectSolveEmpties)}手)");
+            report.AppendLine($"- 今のAIなら: 損の合計 {targetMoves.Sum(m => m.CurrentAiLoss ?? 0)}石"
+                            + $"(悪手 {targetMoves.Count(m => m.CurrentAiLoss >= BlunderThreshold)}手)");
+            report.AppendLine($"- 人間の損の合計: {humanMoves.Sum(m => m.Loss)}石({humanMoves.Count}手)");
+        }
         report.AppendLine();
-        report.AppendLine("| 手 | 色 | 空き | AIが打った手 | 値 | 最善手 | 値 | 損 | 今のAIの手 | 損 |");
+        report.AppendLine("| 手 | 色 | 空き | 打った手 | 値 | 最善手 | 値 | 損 | 今のAIの手 | 損 |");
         report.AppendLine("|---|---|---|---|---|---|---|---|---|---|");
-        foreach (MoveAnalysis m in aiMoves)
+        foreach (MoveAnalysis m in targetMoves)
         {
             string mark = m.Loss >= BlunderThreshold ? " **" : "";
             string markEnd = m.Loss >= BlunderThreshold ? "**" : "";

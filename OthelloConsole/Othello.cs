@@ -51,6 +51,8 @@ public class Othello
     private int _player2FrameCounter = 2;
     private bool _isDebug = false;
     private List<(int x, int y)> _validMoves = new List<(int x, int y)>();
+    /// <summary>打った手の並び(パスは含めない)。終局時にf5d6形式の棋譜として残す</summary>
+    private readonly List<(int row, int col)> _playedMoves = new();
     private int _consecutivePassCount = 0; // 連続パス回数のカウント
 
     /// <summary>
@@ -272,6 +274,7 @@ public class Othello
             }
             Console.WriteLine("=======================================================");
             PlacePiece(row, col, _gameData);
+            _playedMoves.Add((row, col));
             (_player1FrameCounter, _player2FrameCounter) = Counting(_gameData._tiles);
             _consecutivePassCount = 0; // パスをリセット
 
@@ -312,6 +315,8 @@ public class Othello
                 Console.WriteLine($"{ColorLabel(2)}の勝ち！");
             else
                 Console.WriteLine("引き分けです！");
+            if (!GameTranscript.Append(GameTranscript.Format(_playedMoves)))
+                Console.WriteLine("[注意] 棋譜(f5d6形式)を保存できませんでした。");
             Console.WriteLine("=======================================================");
             return true;
         }

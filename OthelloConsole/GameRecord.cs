@@ -31,6 +31,8 @@ public class GameRecord
     public int    WhiteCount { get; set; }
     public string WeightsSource { get; set; } = "";  // "best_weights.json" / "default"
     public List<MoveRecord> Moves { get; set; } = new();
+    /// <summary>f5d6形式の手順(パスは書かない。黒が先手)。2026-11-15より前の棋譜にはない</summary>
+    public string Transcript { get; set; } = "";
 
     /// <summary>棋譜を書き足すファイル。起動のしかたに左右されないよう、exeと同じフォルダの data/ に置く。</summary>
     public static string FilePath => Path.Combine(AppContext.BaseDirectory, "data", "game_records.jsonl");
