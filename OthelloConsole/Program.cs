@@ -7,6 +7,11 @@ internal class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (args.Contains("--bench"))
+        {
+            BenchMode.Run(args);
+            return;
+        }
         if (args.Contains("--console"))
         {
             Othello.Main(args).GetAwaiter().GetResult();

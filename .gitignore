@@ -10,3 +10,8 @@ obj/
 Log/
 # 配布物
 publish/
+
+# 外部のソフトと教師データ(再配布禁止のデータを含むため、gitの対象外)
+external/
+# 対戦ベンチの結果
+bench-results/
