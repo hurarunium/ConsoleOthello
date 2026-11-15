@@ -106,8 +106,12 @@ public class OthelloAI
     // - 14→18 に拡張: 終盤精度が大幅に向上。思考時間が伸びる場合は14〜16に戻すこと
     private const int PerfectSolveThreshold = 18;
 
-    // 評価値の無限大（FinalScore の ±Inf±石数差 表現と区別するため -1 を使う）
+    // 探索の窓の無限大。どの評価値・終局の点数よりも外側にある必要がある
     private const int Inf = 1_000_000_000;
+
+    // 終局の点数の基準(勝ち = WinScore + 石数差、負け = -WinScore - 石数差)。
+    // 窓の端(±Inf)と重なると、2石差以上の勝ち負けが窓の外に出て、最善手を正しく選べなくなるため、Infの内側に置く
+    private const int WinScore = Inf / 2;
 
     public (int x, int y) AI(MainGameData gameData, bool isDebug)
     {
@@ -154,8 +158,8 @@ public class OthelloAI
                 ulong rootHash = _tt.ComputeHash(board);
                 if (_tt.TryGetBestMoveOnly(rootHash, out int ttBest) && ttBest >= 0)
                     bestMove = ttBest;
-                string perfScoreStr = Math.Abs(perfScore) >= Inf - 1
-                    ? (perfScore > 0 ? $"勝ち(+{perfScore - (Inf - 1)}石差)" : $"負け(-{-perfScore - (Inf - 1)}石差)")
+                string perfScoreStr = Math.Abs(perfScore) >= WinScore
+                    ? (perfScore > 0 ? $"勝ち(+{perfScore - WinScore}石差)" : $"負け(-{-perfScore - WinScore}石差)")
                     : $"{perfScore}（引き分け）";
                 InfoLog($"完全読み完了: 最善手={BitBoard.BitToCoord(bestMove)}  スコア={perfScoreStr}  ノード={_recursionsCount}");
                 break;
@@ -219,6 +223,8 @@ public class OthelloAI
     private int NegaScout(BitBoard board, int depth, int alpha, int beta, ref int bestMove)
     {
         ulong hash = _tt.ComputeHash(board);
+        // 置換表に書く値の種類(上限・下限・正確)は、探索を始める前のαで決める。ループ中に更新したαで決めると、βカットの値が「上限」として書かれてしまう
+        int originalAlpha = alpha;
 
         // 置換表参照
         if (_tt.TryGet(hash, depth, alpha, beta, out int ttScore, out int ttBestMove))
@@ -380,12 +386,12 @@ public class OthelloAI
                 }
                 // History Heuristic 更新
                 _historyTable[move] += depth * depth;
-                _tt.Store(hash, depth, bestScore, alpha, beta, localBestMove);
+                _tt.Store(hash, depth, bestScore, originalAlpha, beta, localBestMove);
                 return bestScore;
             }
         }
 
-        _tt.Store(hash, depth, bestScore, alpha, beta, localBestMove);
+        _tt.Store(hash, depth, bestScore, originalAlpha, beta, localBestMove);
         return bestScore;
     }
 
@@ -402,6 +408,8 @@ public class OthelloAI
         }
 
         ulong hash = _tt.ComputeHash(board);
+        // 置換表に書く値の種類(上限・下限・正確)は、探索を始める前のαで決める。ループ中に更新したαで決めると、βカットの値が「上限」として書かれてしまう
+        int originalAlpha = alpha;
         if (_tt.TryGet(hash, 64, alpha, beta, out int ttScore, out int ttBestMove))
             return ttScore;
 
@@ -522,12 +530,12 @@ public class OthelloAI
             if (alpha >= beta)
             {
                 _abCutCount++;
-                _tt.Store(hash, 64, bestScore, alpha, beta, localBestMove);
+                _tt.Store(hash, 64, bestScore, originalAlpha, beta, localBestMove);
                 return bestScore;
             }
         }
 
-        _tt.Store(hash, 64, bestScore, alpha, beta, localBestMove);
+        _tt.Store(hash, 64, bestScore, originalAlpha, beta, localBestMove);
         return bestScore;
     }
 
@@ -538,8 +546,8 @@ public class OthelloAI
     {
         int p = board.PlayerCount;
         int o = board.OpponentCount;
-        if (p > o) return Inf - 1 + (p - o);
-        if (p < o) return -(Inf - 1) - (o - p);
+        if (p > o) return WinScore + (p - o);
+        if (p < o) return -WinScore - (o - p);
         return 0;
     }
 
