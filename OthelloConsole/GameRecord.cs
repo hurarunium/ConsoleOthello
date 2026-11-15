@@ -32,7 +32,7 @@ public class GameRecord
     public string Result     { get; set; } = "";  // 人間から見た結果: "win" / "loss" / "draw"(プレイヤー対AIのみ)。途中でやめたら "aborted"
     public int    BlackCount { get; set; }
     public int    WhiteCount { get; set; }
-    public string WeightsSource { get; set; } = "";  // "best_weights.json" / "default"
+    public string WeightsSource { get; set; } = "";  // 評価ファイルの名前と作成日時(例: "pattern_eval.bin(2026-11-15T23:35…)")。古い棋譜は "best_weights.json" / "default"
     public List<MoveRecord> Moves { get; set; } = new();
     /// <summary>f5d6形式の手順(パスは書かない。黒が先手)。2026-11-15より前の棋譜にはない</summary>
     public string Transcript { get; set; } = "";

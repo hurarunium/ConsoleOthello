@@ -27,7 +27,7 @@ public static class PatternTrainer
         string? egaroucidPath = ValueOf(args, "--egaroucid");
         string? wthorPath = ValueOf(args, "--wthor");
         string? recordsPath = ValueOf(args, "--records");
-        string outPath = ValueOf(args, "--out") ?? EvaluatorOption.DefaultPatternPath;
+        string outPath = ValueOf(args, "--out") ?? EvaluatorFile.DefaultOutputPath;
         int epochs = int.Parse(ValueOf(args, "--epochs") ?? "30");
         long limit = long.Parse(ValueOf(args, "--limit") ?? "0");
         // 1局面の誤差を46か所で分け合うので、1か所あたりの歩幅は小さくする(46 × 学習率 が1より十分小さい値)

@@ -71,12 +71,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
     public MainWindowViewModel()
     {
-        bool hasBestWeights = File.Exists("weights/best_weights.json");
-        _weightsSource = hasBestWeights ? "best_weights.json" : "default";
-        _ai = new OthelloAI(
-            hasBestWeights
-                ? WeightSet.Load("weights/best_weights.json")
-                : WeightSet.Default());
+        _ai = new OthelloAI(EvaluatorFile.Load(path: null, out _weightsSource));
 
         var record = BattleRecord.Load(RecordsPath);
         PlayerWins   = record.Wins;

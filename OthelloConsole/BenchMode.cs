@@ -24,7 +24,7 @@ public sealed class BenchOptions
     /// <summary>
     /// 起動の引数を読み取る。
     /// 例: --bench --our-level 5 --level 5 --games 40 --opening-moves 8 --seed 1
-    /// (--level は Egaroucid のレベル、--our-level は自分のAIのレベル。評価関数は --eval legacy|pattern で選ぶ)
+    /// (--level は Egaroucid のレベル、--our-level は自分のAIのレベル。評価ファイルは --weights で変えられる。標準は weights/pattern_eval.bin)
     /// </summary>
     public static BenchOptions Parse(string[] args)
     {
@@ -118,9 +118,7 @@ public static class BenchMode
     public static void Run(string[] args)
     {
         BenchOptions options = BenchOptions.Parse(args);
-        EvaluatorOption.Choice evaluator = EvaluatorOption.Parse(args);
-        string weightsSource = evaluator.Description;
-        OthelloAI ai = evaluator.CreateAi();
+        var ai = new OthelloAI(EvaluatorFile.LoadFromArgs(args, out string weightsSource));
 
         DateTimeOffset startedAt = DateTimeOffset.Now;
         Directory.CreateDirectory(options.OutputDirectory);

@@ -22,7 +22,6 @@ public static class AnalyzeMode
     /// <summary>OthelloAI が完全読みに入る残りマスの数(OthelloAI.PerfectSolveThreshold と同じ)</summary>
     private const int PerfectSolveEmpties = 18;
     private const string DefaultEgaroucidPath = "../external/egaroucid/Egaroucid-console_v7.8.2/bin/Egaroucid_for_Console.out";
-    private const string WeightsPath = "weights/best_weights.json";
     /// <summary>f5d6形式の棋譜を分析するときの、今のAIのレベルの標準(--our-level で変えられる)</summary>
     private const int DefaultTranscriptAiLevel = AiLevel.Max;
 
@@ -67,14 +66,14 @@ public static class AnalyzeMode
             return;
         }
 
-        var weights = File.Exists(WeightsPath) ? WeightSet.Load(WeightsPath) : WeightSet.Default();
+        PatternEvaluator evaluator = EvaluatorFile.LoadFromArgs(args, out string weightsSource);
         var report = new StringBuilder();
         report.AppendLine($"# 棋譜の分析({DateTimeOffset.Now:yyyy-MM-dd HH:mm})");
         report.AppendLine();
         report.AppendLine($"- 棋譜: `{recordsPath}`");
         report.AppendLine($"- 評価: Egaroucid lv.{level}(定石の本なし、{threads}スレッド)。値は、その手を打った側から見た最終の石数の差の見込み");
         report.AppendLine($"- 損: 最善手の値 − 打った手の値。{BlunderThreshold}以上を悪手とする");
-        report.AppendLine($"- 今のAI: 棋譜と同じレベル(--our-level の指定があればそのレベル)の、今のコードのAI(重み: {(File.Exists(WeightsPath) ? "best_weights.json" : "default")})が選ぶ手");
+        report.AppendLine($"- 今のAI: 棋譜と同じレベル(--our-level の指定があればそのレベル)の、今のコードのAI(評価ファイル: {weightsSource})が選ぶ手");
         report.AppendLine($"- 4段階だったころの棋譜は、中盤で読む手数が同じレベルに読み替える(Beginner→3、Normal→6、Expert→10、Professional→14)。当時はどれも残り18マスから完全読みしていたので、終盤の読み方は当時と違う");
         report.AppendLine();
 
@@ -86,7 +85,7 @@ public static class AnalyzeMode
             {
                 int gameLevel = ourLevel ?? LevelOf(record);
                 Console.WriteLine($"分析中: {lineNumber}行目(今のAIはレベル{gameLevel}、{record.Moves.Count}手)");
-                List<MoveAnalysis> moves = AnalyzeGame(record, gameLevel, egaroucid, weights);
+                List<MoveAnalysis> moves = AnalyzeGame(record, gameLevel, egaroucid, evaluator);
                 AppendGameReport(report, lineNumber, record, moves);
             }
         }
@@ -161,7 +160,7 @@ public static class AnalyzeMode
         => record.AiLevel > 0 ? record.AiLevel : AiLevel.FromLegacyStrengthName(record.AiStrength);
 
     /// <summary>1局を初手から並べ直し、パス以外の各手を分析する</summary>
-    private static List<MoveAnalysis> AnalyzeGame(GameRecord record, int aiLevel, EgaroucidClient egaroucid, WeightSet weights)
+    private static List<MoveAnalysis> AnalyzeGame(GameRecord record, int aiLevel, EgaroucidClient egaroucid, PatternEvaluator evaluator)
     {
         MainGameData gameData = CreateInitialGameData(aiLevel);
         // この作りでは、AIが先手のとき白から打ち始めるので、1手目の色で手番を決める
@@ -193,7 +192,7 @@ public static class AnalyzeMode
             if (move.Actor != "human")
             {
                 // 置換表などを持ち越さないよう、毎回新しく作る
-                (int row, int col) chosen = new OthelloAI(weights).AI(gameData.Clone(), false);
+                (int row, int col) chosen = new OthelloAI(evaluator).AI(gameData.Clone(), false);
                 currentAiMove = GameRecord.ToNotation(chosen.row, chosen.col);
                 currentAiValue = values[chosen];
             }

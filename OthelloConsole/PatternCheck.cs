@@ -6,10 +6,11 @@ using static OthelloSystem;
 /// - 置き場所の数
 /// - 対称性: 盤を8通りに回転・反転しても評価値が同じか(点数はランダムに入れて確かめる)
 /// - 保存と読み込み: 書いたファイルを読み込むと同じ値に戻るか。違うファイルは読み込みで止まるか
-/// - 速さ: 1秒あたりの評価の回数を、今の評価関数と比べる
+/// - 速さ: 1秒あたりの評価の回数と、探索で1秒あたりに読む局面の数(学習した評価ファイル。なければランダムな点数)
 /// パターン評価の形を変えたら、毎回これを通す。
 ///
 /// 例: --pattern-check --positions 2000
+///     --pattern-check --weights x.bin   (速さを測る評価ファイルを指定する)
 /// </summary>
 public static class PatternCheck
 {
@@ -24,8 +25,13 @@ public static class PatternCheck
         CheckInstances();
         CheckSymmetry(boards);
         CheckSaveAndLoad(boards);
-        CheckSpeed(boards);
-        CheckSearchSpeed(boards);
+        // 速さは、学習した評価ファイルで測る(まだなければ、ランダムな点数で測る)
+        bool useFile = args.Contains("--weights") || File.Exists(EvaluatorFile.FindDefaultPath());
+        string description = "ランダムな点数";
+        PatternEvaluator measured = useFile ? EvaluatorFile.LoadFromArgs(args, out description) : PatternEvaluator.CreateRandom(seed: 5);
+        Console.WriteLine($"速さを測る評価関数: {description}");
+        CheckSpeed(boards, measured);
+        CheckSearchSpeed(boards, measured);
     }
 
     private static void CheckInstances()
@@ -79,39 +85,25 @@ public static class PatternCheck
         }
     }
 
-    private static void CheckSpeed(List<BitBoard> boards)
+    private static void CheckSpeed(List<BitBoard> boards, PatternEvaluator evaluator)
     {
-        PatternEvaluator pattern = PatternEvaluator.CreateRandom(seed: 5);
-        OthelloAI legacy = new OthelloAI(File.Exists(EvaluatorOption.LegacyWeightsPath)
-            ? WeightSet.Load(EvaluatorOption.LegacyWeightsPath) : WeightSet.Default());
         const int Rounds = 200;
-
         long checksum = 0;
         var stopwatch = Stopwatch.StartNew();
-        for (int r = 0; r < Rounds; r++) foreach (BitBoard board in boards) checksum += legacy.Evaluate(board);
-        double legacyRate = Rounds * boards.Count / stopwatch.Elapsed.TotalSeconds;
-
-        stopwatch.Restart();
-        for (int r = 0; r < Rounds; r++) foreach (BitBoard board in boards) checksum += pattern.Evaluate(board);
-        double patternRate = Rounds * boards.Count / stopwatch.Elapsed.TotalSeconds;
-
-        Console.WriteLine($"[参考] 速さ: 今の評価関数 {legacyRate / 1e6:F2}百万回/秒、パターン評価 {patternRate / 1e6:F2}百万回/秒"
-                        + $"(パターン評価は今の {patternRate / legacyRate:F2}倍){(checksum == 0 ? "" : "")}");
+        for (int r = 0; r < Rounds; r++) foreach (BitBoard board in boards) checksum += evaluator.Evaluate(board);
+        double rate = Rounds * boards.Count / stopwatch.Elapsed.TotalSeconds;
+        Console.WriteLine($"[参考] 評価の速さ: {rate / 1e6:F2}百万回/秒{(checksum == long.MinValue ? "" : "")}");
     }
 
-    /// <summary>
-    /// 探索の速さ: 中盤の局面をレベル8で読ませ、1秒あたりに読んだ局面の数を比べる。
-    /// 評価関数が違うと読む局面の数も変わるので、かかった時間ではなく、1秒あたりの局面の数で比べる
-    /// </summary>
-    private static void CheckSearchSpeed(List<BitBoard> boards)
+    /// <summary>探索の速さ: 中盤の局面をレベル8で読ませ、1秒あたりに読んだ局面の数と、1手の平均の時間を出す</summary>
+    private static void CheckSearchSpeed(List<BitBoard> boards, PatternEvaluator evaluator)
     {
         const int Level = 8;
         List<BitBoard> midgame = boards.Where(b => b.EmptyCount > AiLevel.PerfectSolveEmpties(Level) && b.EmptyCount < 50).Take(30).ToList();
-        OthelloAI legacy = new OthelloAI(File.Exists(EvaluatorOption.LegacyWeightsPath)
-            ? WeightSet.Load(EvaluatorOption.LegacyWeightsPath) : WeightSet.Default());
-        OthelloAI pattern = new OthelloAI(PatternEvaluator.CreateRandom(seed: 5));
+        var ai = new OthelloAI(evaluator);
 
-        (double nodesPerSecond, double secondsPerMove) Measure(OthelloAI ai)
+        OthelloDebugLog.SuppressOutput = true;
+        try
         {
             long nodes = 0;
             var stopwatch = Stopwatch.StartNew();
@@ -120,16 +112,8 @@ public static class PatternCheck
                 ai.AI(ToGameData(board, Level), false);
                 nodes += ai.LastNodeCount;
             }
-            return (nodes / stopwatch.Elapsed.TotalSeconds, stopwatch.Elapsed.TotalSeconds / midgame.Count);
-        }
-
-        OthelloDebugLog.SuppressOutput = true;
-        try
-        {
-            var (legacyNps, legacySec) = Measure(legacy);
-            var (patternNps, patternSec) = Measure(pattern);
-            Console.WriteLine($"[参考] 探索の速さ(レベル{Level}、中盤{midgame.Count}局面): 今の評価関数 {legacyNps / 1e6:F2}百万局面/秒(1手 平均{legacySec * 1000:F0}ms)、"
-                            + $"パターン評価 {patternNps / 1e6:F2}百万局面/秒(1手 平均{patternSec * 1000:F0}ms。点数はランダム)。パターン評価は今の {patternNps / legacyNps:F2}倍");
+            double seconds = stopwatch.Elapsed.TotalSeconds;
+            Console.WriteLine($"[参考] 探索の速さ(レベル{Level}、中盤{midgame.Count}局面): {nodes / seconds / 1e6:F2}百万局面/秒、1手 平均{seconds / midgame.Count * 1000:F0}ms");
         }
         finally
         {

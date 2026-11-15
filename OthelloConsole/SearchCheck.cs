@@ -10,7 +10,7 @@ using static OthelloSystem;
 ///   使うので、中盤の食い違いは近似によるものも含む。
 ///
 /// 例: --search-check --positions 200
-///     --search-check --eval pattern      (パターン評価で確かめる)
+///     --search-check --weights x.bin     (評価ファイルを指定する)
 /// </summary>
 public static class SearchCheck
 {
@@ -23,15 +23,16 @@ public static class SearchCheck
         int index = Array.IndexOf(args, "--positions");
         int positions = index >= 0 && index + 1 < args.Length ? int.Parse(args[index + 1]) : 200;
 
-        EvaluatorOption.Choice evaluator = EvaluatorOption.Parse(args);
-        Console.WriteLine($"評価関数: {evaluator.Description}");
+        PatternEvaluator evaluatorFile = EvaluatorFile.LoadFromArgs(args, out string description);
+        Console.WriteLine($"評価関数: {description}");
+        Func<OthelloAI> createAi = () => new OthelloAI(evaluatorFile);
 
         OthelloDebugLog.SuppressOutput = true;
         try
         {
-            CheckEndgame(positions, empties: 12, seed: 7, evaluator.CreateAi);
-            CheckMidgame(positions, level: 3, seed: 11, evaluator.CreateAi);
-            CheckMidgame(positions, level: 6, seed: 13, evaluator.CreateAi);
+            CheckEndgame(positions, empties: 12, seed: 7, createAi);
+            CheckMidgame(positions, level: 3, seed: 11, createAi);
+            CheckMidgame(positions, level: 6, seed: 13, createAi);
         }
         finally
         {

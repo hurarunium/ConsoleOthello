@@ -11,7 +11,7 @@ public static class OthelloDebugLog
 {
     public static bool _isDebug = false;
     public static LogLevel CurrentLevel = LogLevel.Debug;
-    /// <summary>学習モード中はtrueにしてコンソール出力を全て抑制する</summary>
+    /// <summary>ベンチ・自己対戦・確認の間はtrueにして、コンソール出力を全て抑制する</summary>
     public static bool SuppressOutput = false;
 
     private static StreamWriter? sw;

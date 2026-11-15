@@ -42,11 +42,7 @@ public class Othello
 
     private StringBuilder builder = new();
     private MainGameData _gameData = new MainGameData();
-    public OthelloAI _ai = new OthelloAI(
-        File.Exists("weights/best_weights.json")
-            ? WeightSet.Load("weights/best_weights.json")
-            : WeightSet.Default()
-    );
+    public OthelloAI _ai = new OthelloAI(EvaluatorFile.Load(path: null, out _));
     private int _player1FrameCounter = 2;
     private int _player2FrameCounter = 2;
     private bool _isDebug = false;
@@ -72,7 +68,7 @@ public class Othello
             Console.WriteLine("[INFO] デバッグモードを有効化しました (--debug)");
         }
         Console.WriteLine("オセロへようこそ！");
-        Console.WriteLine("モード選択:AI対戦(1) 2人対戦(2) AI対AI(3) 学習モード(4)");
+        Console.WriteLine("モード選択:AI対戦(1) 2人対戦(2) AI対AI(3)");
         string input = Console.ReadLine() ?? "";
 
         switch (input)
@@ -90,10 +86,6 @@ public class Othello
                 _game._gameData._gameMode = GameMode.AIvsAI;
                 _game._gameData._gameTurn = GameTurn.AI;
                 break;
-            case "4":
-                Console.WriteLine("学習モードを選択しました。");
-                RunTrainingMode();
-                return;
             default:
                 Console.WriteLine("無効な入力です。2人対戦モードに進みます。");
                 _game._gameData._gameMode = GameMode.PlayervsPlayer;
@@ -144,37 +136,6 @@ public class Othello
 
         Console.Clear();
         await _game.RunGame();
-    }
-
-    /// <summary>
-    /// 学習モードのセットアップと実行
-    /// </summary>
-    static void RunTrainingMode()
-    {
-        Console.WriteLine("学習イテレーション数を入力してください（デフォルト: 500）:");
-        int maxIter = int.TryParse(Console.ReadLine(), out int mi) && mi > 0 ? mi : 500;
-
-        Console.WriteLine("1評価あたりのゲーム数を入力してください（デフォルト: 20）:");
-        int gamesPerEval = int.TryParse(Console.ReadLine(), out int gpe) && gpe > 0 ? gpe : 20;
-
-        Console.WriteLine($"AIのレベルを入力してください({AiLevel.Min}〜{AiLevel.Max})  [デフォルト: {AiLevel.Default}]");
-        int trainLevel = AiLevel.TryParse(Console.ReadLine(), out int level) ? level : AiLevel.Default;
-
-        Console.WriteLine("学習アルゴリズムを選択してください: ヒルクライミング(1) 焼きなまし法(2)  [デフォルト: 焼きなまし法]");
-        string algoChoice = Console.ReadLine() ?? "";
-
-        Console.Clear();
-        if (algoChoice == "1")
-        {
-            HillClimbTrainer.Run(maxIter, gamesPerEval, trainLevel);
-        }
-        else
-        {
-            Console.WriteLine("初期温度 T0 を入力してください（デフォルト: 5.0 石）:");
-            Console.WriteLine("  ※大きいほど序盤に広く探索。推奨範囲: 3〜10");
-            double t0 = double.TryParse(Console.ReadLine(), out double tv) && tv > 0 ? tv : 5.0;
-            SATrainer.Run(maxIter, gamesPerEval, trainLevel, t0);
-        }
     }
 
     /// <summary>
