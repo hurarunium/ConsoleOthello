@@ -122,8 +122,8 @@ public readonly struct BitBoard
         return new BitBoard(newPlayer, newOpponent);
     }
 
-    // 石を置いたときに反転すべき石のビットマスクを計算
-    private ulong GetFlipped(int pos)
+    /// <summary>手番の側が pos に置いたときに裏返る石(置けないマスなら 0)</summary>
+    public ulong GetFlipped(int pos)
     {
         ulong move = 1UL << pos;
         ulong flipped = 0UL;

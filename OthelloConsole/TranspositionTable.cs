@@ -23,7 +23,7 @@ public struct TTEntry
 }
 
 /// <summary>
-/// Zobristハッシュを用いた置換表。
+/// 盤面のハッシュを用いた置換表。
 /// 同一局面の再評価を防ぎ探索を大幅に高速化する。
 /// </summary>
 public class TranspositionTable
@@ -33,7 +33,6 @@ public class TranspositionTable
     private const int TableMask = TableSize - 1;
 
     private readonly TTEntry[] _table = new TTEntry[TableSize];
-    private readonly ulong[,] _zobristTable; // [位置64][色2]
 
     // 統計カウンター
     public int HitCount { get; private set; }
@@ -47,45 +46,21 @@ public class TranspositionTable
         MissCount = 0;
     }
 
-    public TranspositionTable()
-    {
-        _zobristTable = new ulong[64, 2];
-        var rng = new Random(12345); // 固定シードで再現性確保
-        for (int i = 0; i < 64; i++)
-        {
-            _zobristTable[i, 0] = NextUInt64(rng);
-            _zobristTable[i, 1] = NextUInt64(rng);
-        }
-    }
-
-    private static ulong NextUInt64(Random rng)
-    {
-        byte[] buf = new byte[8];
-        rng.NextBytes(buf);
-        return BitConverter.ToUInt64(buf, 0);
-    }
-
     /// <summary>
-    /// BitBoardからZobristハッシュを計算する
+    /// BitBoardからハッシュを計算する。石を1つずつ見るZobristハッシュより速いよう、
+    /// 2つの64ビットの値を掛け算とずらしでよく混ぜる(SplitMix64 の仕上げと同じ混ぜ方)
     /// </summary>
     public ulong ComputeHash(BitBoard board)
     {
-        ulong hash = 0UL;
-        ulong player = board.Player;
-        ulong opponent = board.Opponent;
-        while (player != 0)
-        {
-            int pos = BitOperations.TrailingZeroCount(player);
-            hash ^= _zobristTable[pos, 0];
-            player &= player - 1;
-        }
-        while (opponent != 0)
-        {
-            int pos = BitOperations.TrailingZeroCount(opponent);
-            hash ^= _zobristTable[pos, 1];
-            opponent &= opponent - 1;
-        }
-        return hash;
+        ulong hash = Mix(board.Player ^ 0x9E3779B97F4A7C15UL) ^ BitOperations.RotateLeft(Mix(board.Opponent + 0xC2B2AE3D27D4EB4FUL), 32);
+        return Mix(hash);
+    }
+
+    private static ulong Mix(ulong value)
+    {
+        value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9UL;
+        value = (value ^ (value >> 27)) * 0x94D049BB133111EBUL;
+        return value ^ (value >> 31);
     }
 
     /// <summary>
@@ -167,16 +142,6 @@ public class TranspositionTable
         type  = default;
         score = 0;
         return false;
-    }
-
-    /// <summary>
-    /// 置換表からスコアを見ずに最善手だけを取得する（完全読み後のルート最善手取得用）
-    /// </summary>
-    public bool TryGetBestMoveOnly(ulong hash, out int bestMove)
-    {
-        ref TTEntry entry = ref _table[hash & TableMask];
-        bestMove = entry.BestMove;
-        return entry.Hash == hash && bestMove >= 0;
     }
 
     /// <summary>
