@@ -24,7 +24,8 @@ public sealed class BenchOptions
     /// <summary>
     /// 起動の引数を読み取る。
     /// 例: --bench --our-level 5 --level 5 --games 40 --opening-moves 8 --seed 1
-    /// (--level は Egaroucid のレベル、--our-level は自分のAIのレベル。評価ファイルは --weights で変えられる。標準は weights/pattern_eval.bin)
+    /// (--level は Egaroucid のレベル、--our-level は自分のAIのレベル。評価ファイルは --weights で変えられる。標準は weights/pattern_eval.bin。
+    ///  --no-lmr で、中盤の探索の LMR を使わずに打つ)
     /// </summary>
     public static BenchOptions Parse(string[] args)
     {
@@ -87,6 +88,8 @@ public sealed class BenchSummary
     public string EndedAt { get; set; } = "";
     public int OurLevel { get; set; }
     public string OurWeights { get; set; } = "";
+    /// <summary>中盤の探索で LMR を使ったか(--no-lmr で使わない)</summary>
+    public bool OurUsesLmr { get; set; } = true;
     public int EgaroucidLevel { get; set; }
     public bool EgaroucidUsesBook { get; set; }
     public int EgaroucidThreads { get; set; }
@@ -118,7 +121,8 @@ public static class BenchMode
     public static void Run(string[] args)
     {
         BenchOptions options = BenchOptions.Parse(args);
-        var ai = new OthelloAI(EvaluatorFile.LoadFromArgs(args, out string weightsSource));
+        bool useLmr = !args.Contains("--no-lmr");
+        var ai = new OthelloAI(EvaluatorFile.LoadFromArgs(args, out string weightsSource)) { UseLmr = useLmr };
 
         DateTimeOffset startedAt = DateTimeOffset.Now;
         Directory.CreateDirectory(options.OutputDirectory);
@@ -128,7 +132,7 @@ public static class BenchMode
         string gamesPath = Path.Combine(options.OutputDirectory, baseName + "-games.jsonl");
         string summaryPath = Path.Combine(options.OutputDirectory, baseName + "-summary.json");
 
-        Console.WriteLine($"ベンチ開始: 自分のAI=レベル{options.OurLevel}({weightsSource})  Egaroucid lv.{options.EgaroucidLevel}"
+        Console.WriteLine($"ベンチ開始: 自分のAI=レベル{options.OurLevel}({weightsSource}、LMR{(useLmr ? "あり" : "なし")})  Egaroucid lv.{options.EgaroucidLevel}"
                         + $"(定石の本={(options.EgaroucidUsesBook ? "あり" : "なし")}, スレッド={options.EgaroucidThreads})"
                         + $"  {options.Games}局  序盤のランダム手={options.OpeningMoves}  種={options.Seed}");
 
@@ -162,6 +166,7 @@ public static class BenchMode
         }
 
         BenchSummary summary = Summarize(results, options, weightsSource, startedAt);
+        summary.OurUsesLmr = useLmr;
         File.WriteAllText(summaryPath, JsonSerializer.Serialize(summary, s_jsonOptions));
         PrintSummary(summary);
         Console.WriteLine($"結果: {Path.GetFullPath(gamesPath)}");

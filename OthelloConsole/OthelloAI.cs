@@ -14,6 +14,9 @@ public class OthelloAI
         _evaluator = evaluator;
     }
 
+    /// <summary>中盤の探索で LMR(後ろの手を浅く読む近似)を使うか。LMR あり・なしを比べるため(--bench --no-lmr)に切り替えられる</summary>
+    public bool UseLmr { get; init; } = true;
+
     private int _maxDepth;
     private int _recursionsCount;
 
@@ -265,7 +268,7 @@ public class OthelloAI
                 // depth-2 で Null Window 探索し、alpha を超えた場合のみ full depth で再探索する。
                 // 条件: depth>=3 かつ insertPos（TT/Killer枠）より後の手
                 int dummy = -1;
-                bool canLMR = depth >= 3 && i >= Math.Max(2, insertPos);
+                bool canLMR = UseLmr && depth >= 3 && i >= Math.Max(2, insertPos);
                 int lmrDepth = canLMR ? depth - 2 : depth - 1;
 
                 score = -NegaScout(next, lmrDepth, -alpha - 1, -alpha, ref dummy);
