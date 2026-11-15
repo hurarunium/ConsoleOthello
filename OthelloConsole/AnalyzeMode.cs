@@ -12,6 +12,7 @@ using static OthelloSystem;
 /// 例: --analyze Data/collected/game_records.jsonl          (人間が勝った局をすべて)
 ///     --analyze Data/collected/game_records.jsonl --index 39 --level 18
 ///     --analyze data/game_records.txt                       (全部の局)
+///     --analyze data/game_records.txt --threads 4            (速くなるが、評価値が少しぶれる)
 /// </summary>
 public static class AnalyzeMode
 {
@@ -41,6 +42,8 @@ public static class AnalyzeMode
         string recordsPath = args[fileIndex + 1];
         int level = int.Parse(ValueOf(args, "--level") ?? "18");
         string egaroucidPath = ValueOf(args, "--egaroucid") ?? DefaultEgaroucidPath;
+        // 複数スレッドで読むと読む順番が毎回変わり、評価値が少しぶれる。同じ棋譜からいつも同じ報告を出すため、標準は1スレッド
+        int threads = int.Parse(ValueOf(args, "--threads") ?? "1");
         HashSet<int> indexes = args.Select((arg, i) => (arg, i))
                                    .Where(pair => pair.arg == "--index" && pair.i + 1 < args.Length)
                                    .Select(pair => int.Parse(args[pair.i + 1]))
@@ -63,7 +66,7 @@ public static class AnalyzeMode
         report.AppendLine($"# 棋譜の分析({DateTimeOffset.Now:yyyy-MM-dd HH:mm})");
         report.AppendLine();
         report.AppendLine($"- 棋譜: `{recordsPath}`");
-        report.AppendLine($"- 評価: Egaroucid lv.{level}(定石の本なし)。値は、その手を打った側から見た最終の石数の差の見込み");
+        report.AppendLine($"- 評価: Egaroucid lv.{level}(定石の本なし、{threads}スレッド)。値は、その手を打った側から見た最終の石数の差の見込み");
         report.AppendLine($"- 損: 最善手の値 − 打った手の値。{BlunderThreshold}以上を悪手とする");
         report.AppendLine($"- 今のAI: 同じ強さの、今のコードのAI(重み: {(File.Exists(WeightsPath) ? "best_weights.json" : "default")})が選ぶ手");
         report.AppendLine();
@@ -71,7 +74,7 @@ public static class AnalyzeMode
         OthelloDebugLog.SuppressOutput = true;
         try
         {
-            using var egaroucid = new EgaroucidClient(egaroucidPath, level, threads: 4, useBook: false);
+            using var egaroucid = new EgaroucidClient(egaroucidPath, level, threads, useBook: false);
             foreach ((int lineNumber, GameRecord record) in games)
             {
                 Console.WriteLine($"分析中: {lineNumber}行目({record.AiStrength}、{record.Moves.Count}手)");

@@ -95,6 +95,8 @@ public sealed partial class EgaroucidClient : IDisposable
     /// <returns>1始まりの(行, 列)ごとの評価値</returns>
     public Dictionary<(int row, int col), int> GetMoveValues(int[,] tiles, int turnNum, int legalMoveCount)
     {
+        // 前に評価した局面の読みの結果(置換表)が残っていると、評価値が評価の順番で変わってしまうので、毎回消す
+        _process.StandardInput.WriteLine("clearcache");
         _process.StandardInput.WriteLine($"setboard {ToBoardString(tiles)} {(turnNum == 1 ? 'B' : 'W')}");
         _process.StandardInput.WriteLine($"hint {legalMoveCount}");
         _process.StandardInput.Flush();
