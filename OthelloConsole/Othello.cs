@@ -218,15 +218,13 @@ public class Othello
                 Console.WriteLine($"AIの手{x},{y}を選択しました。");
                 input = $"{x}{y}";
 
-                // デバッグOFF時は3秒待機（結果を確認できるように）
-                // デバッグON時は即座に進む（ログで詳細が見えるため）
-                if (!_isDebug) await Task.Delay(3000);
-
             }
             else
             {
                 Console.WriteLine("置く場所を選んでください (例: 34 は 縦3番 横4番に置く)");
-                input = Console.ReadLine() ?? "";
+                // 入力が尽きたとき(ファイルから手を流し込む確認など)は、対局をやめる。
+                // 空の入力として扱うと「無効な入力」を受け取り続けて止まらなくなるため
+                input = Console.ReadLine() ?? "end";
             }
 
             if (input == "end")
