@@ -18,6 +18,11 @@ public partial class MainWindowViewModel : ViewModelBase
     private readonly string _weightsSource;
     private GameRecord?     _currentRecord;
 
+    // ─── 対局の番号 ─────────────────────────────────────────────
+    // 「ゲーム開始」のたびに増やす。AIの思考やパスの待ちのあとで番号が変わっていたら、
+    // 新しい対局が始まっているので、前の対局の手を打たずに捨てる(前の対局の手が新しい盤面に打たれるのを防ぐ)
+    private int _gameNumber;
+
     // ─── バインディングプロパティ ───────────────────────────────
     [ObservableProperty] private int    _blackScore;
     [ObservableProperty] private int    _whiteScore;
@@ -50,7 +55,11 @@ public partial class MainWindowViewModel : ViewModelBase
     // ─── CanExecute 変更通知 ────────────────────────────────────
     partial void OnIsPlayerTurnChanged(bool value)  => CellClickCommand.NotifyCanExecuteChanged();
     partial void OnIsGameRunningChanged(bool value) => CellClickCommand.NotifyCanExecuteChanged();
-    partial void OnIsAiThinkingChanged(bool value)  => CellClickCommand.NotifyCanExecuteChanged();
+    partial void OnIsAiThinkingChanged(bool value)
+    {
+        CellClickCommand.NotifyCanExecuteChanged();
+        NewGameCommand.NotifyCanExecuteChanged();
+    }
     partial void OnSelectedGameModeChanged(GameMode value) => OnPropertyChanged(nameof(IsPlayerVsAiMode));
 
     // ─── コレクション ───────────────────────────────────────────
@@ -91,9 +100,13 @@ public partial class MainWindowViewModel : ViewModelBase
     }
 
     // ─── NewGame コマンド ────────────────────────────────────────
-    [RelayCommand]
+    // AIの思考中は押せない。思考中に新しい対局を始めると、前の対局のAIと新しい対局のAIが
+    // 同じ OthelloAI(置換表)を同時に使ってしまうため
+    [RelayCommand(CanExecute = nameof(CanStartNewGame))]
     private async Task NewGame()
     {
+        _gameNumber++;
+
         // 対局の途中で「ゲーム開始」を押されたら、そこまでの棋譜を途中終了として残す
         if (IsGameRunning && _currentRecord is { Moves.Count: > 0 })
         {
@@ -152,6 +165,8 @@ public partial class MainWindowViewModel : ViewModelBase
         await PlaceAndAdvanceAsync(cell.Row, cell.Col);
     }
 
+    private bool CanStartNewGame() => !IsAiThinking;
+
     private bool CanClickCell(CellViewModel? _)
         => IsPlayerTurn && IsGameRunning && !IsAiThinking;
 
@@ -193,7 +208,9 @@ public partial class MainWindowViewModel : ViewModelBase
 
             if (CheckGameOver()) return;
 
+            int gameNumber = _gameNumber;
             await Task.Delay(1500);
+            if (gameNumber != _gameNumber) return; // 待っている間に新しい対局が始まった
             IsPassNotification = false;
 
             _gameData = OthelloSystem.TurnChange(_gameData);
@@ -228,6 +245,7 @@ public partial class MainWindowViewModel : ViewModelBase
         CurrentTurnText = $"AI（{color}）が思考中...";
         StatusMessage   = "しばらくお待ちください";
 
+        int gameNumber = _gameNumber;
         (int x, int y) aiMove;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         try
@@ -240,10 +258,12 @@ public partial class MainWindowViewModel : ViewModelBase
             IsAiThinking = false;
         }
         long thinkMs = stopwatch.ElapsedMilliseconds;
+        if (gameNumber != _gameNumber) return; // 考えている間に新しい対局が始まった
 
         CurrentTurnText = $"AI（{color}）が ({aiMove.x}, {aiMove.y}) に置きました";
         StatusMessage   = "";
         await Task.Delay(600);
+        if (gameNumber != _gameNumber) return; // 待っている間に新しい対局が始まった
 
         await PlaceAndAdvanceAsync(aiMove.x, aiMove.y, thinkMs);
     }
