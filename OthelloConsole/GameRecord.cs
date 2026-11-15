@@ -23,7 +23,10 @@ public class GameRecord
     public string StartedAt  { get; set; } = "";  // ISO8601
     public string EndedAt    { get; set; } = "";  // ISO8601
     public string GameMode   { get; set; } = "";
+    /// <summary>4段階だったころの強さの名前(Beginnerなど)。2026-11-15より前の棋譜だけにある。新しい棋譜は AiLevel を使う</summary>
     public string AiStrength { get; set; } = "";
+    /// <summary>AIのレベル(1〜15)。古い棋譜では0</summary>
+    public int    AiLevel    { get; set; }
     public string HumanColor { get; set; } = "";  // "black" / "white"。人間がいないモードでは ""
     public string Winner     { get; set; } = "";  // "black" / "white" / "draw"。途中でやめたら ""
     public string Result     { get; set; } = "";  // 人間から見た結果: "win" / "loss" / "draw"(プレイヤー対AIのみ)。途中でやめたら "aborted"

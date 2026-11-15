@@ -47,7 +47,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
     // ─── 設定プロパティ ─────────────────────────────────────────
     [ObservableProperty] private GameMode   _selectedGameMode   = GameMode.PlayervsAI;
-    [ObservableProperty] private AIStrength _selectedAiStrength = AIStrength.Normal;
+    [ObservableProperty] private int        _selectedAiLevel    = AiLevel.Default;
     [ObservableProperty] private bool       _isPlayerFirst      = true;
 
     public bool IsPlayerVsAiMode => SelectedGameMode == GameMode.PlayervsAI;
@@ -67,7 +67,7 @@ public partial class MainWindowViewModel : ViewModelBase
         new(Enumerable.Range(0, 64).Select(i => new CellViewModel(i)));
 
     public IReadOnlyList<GameMode>   GameModes   { get; } = Enum.GetValues<GameMode>().ToList();
-    public IReadOnlyList<AIStrength> AiStrengths { get; } = Enum.GetValues<AIStrength>().ToList();
+    public IReadOnlyList<int>        AiLevels    { get; } = AiLevel.All;
 
     public MainWindowViewModel()
     {
@@ -126,7 +126,7 @@ public partial class MainWindowViewModel : ViewModelBase
         {
             _tilesSize   = 8,
             _gameMode    = SelectedGameMode,
-            _AIStrength  = SelectedAiStrength,
+            _aiLevel     = SelectedAiLevel,
             _gameTurn    = aiGoesFirst ? GameTurn.AI    : GameTurn.Player,
             _turnNum     = 1, // どのモードでも黒から打ち始める。人間が後攻なら、AIが黒・人間が白
             _turnCounter = 1,
@@ -143,7 +143,7 @@ public partial class MainWindowViewModel : ViewModelBase
         {
             StartedAt     = DateTimeOffset.Now.ToString("o"),
             GameMode      = SelectedGameMode.ToString(),
-            AiStrength    = SelectedAiStrength.ToString(),
+            AiLevel       = SelectedAiLevel,
             HumanColor    = SelectedGameMode == GameMode.PlayervsAI ? HumanColorName() : "",
             WeightsSource = _weightsSource,
         };

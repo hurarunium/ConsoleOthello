@@ -160,17 +160,17 @@
               </StackPanel>
             </StackPanel>
 
-            <!-- AI強度（AIが絡むモードのみ） -->
+            <!-- AIのレベル（AIが絡むモードのみ） -->
             <StackPanel Spacing="4"
                         IsVisible="{Binding SelectedGameMode,
                                     Converter={StaticResource HasAiConverter}}">
-              <TextBlock Text="AI 強さ" Foreground="#cccccc" FontSize="12" />
-              <ComboBox ItemsSource="{Binding AiStrengths}"
-                        SelectedItem="{Binding SelectedAiStrength}"
+              <TextBlock Text="AI レベル" Foreground="#cccccc" FontSize="12" />
+              <ComboBox ItemsSource="{Binding AiLevels}"
+                        SelectedItem="{Binding SelectedAiLevel}"
                         HorizontalAlignment="Stretch">
                 <ComboBox.ItemTemplate>
                   <DataTemplate>
-                    <TextBlock Text="{Binding Converter={StaticResource AiStrengthConverter}}" />
+                    <TextBlock Text="{Binding Converter={StaticResource AiLevelConverter}}" />
                   </DataTemplate>
                 </ComboBox.ItemTemplate>
               </ComboBox>

@@ -100,11 +100,8 @@ public class OthelloAI
 
     private readonly TranspositionTable _tt = new();
 
-    // 完全読みに切り替える残り空きマス数の閾値。
-    // 残り18マス以下で完全読みに移行する根拠:
-    // - αβ枝刈り + 置換表 + Move Orderingにより professional強度でも数秒以内に完了（実測値ベース）
-    // - 14→18 に拡張: 終盤精度が大幅に向上。思考時間が伸びる場合は14〜16に戻すこと
-    private const int PerfectSolveThreshold = 18;
+    // 完全読みに切り替える残り空きマス数。レベルから決める(AiLevel.PerfectSolveEmpties)
+    private int _perfectSolveEmpties;
 
     // 探索の窓の無限大。どの評価値・終局の点数よりも外側にある必要がある
     private const int Inf = 1_000_000_000;
@@ -123,17 +120,12 @@ public class OthelloAI
         _lastProgressLogNodes = 0;
         StartAILog(gameData._turnCounter);
 
-        _maxDepth = gameData._AIStrength switch
-        {
-            AIStrength.Beginner => 3,
-            AIStrength.Normal => 6,
-            AIStrength.Expert => 10,
-            AIStrength.Professional => 14,
-            _ => 6
-        };
+        int level = AiLevel.Clamp(gameData._aiLevel);
+        _maxDepth = AiLevel.MidgameDepth(level);
+        _perfectSolveEmpties = AiLevel.PerfectSolveEmpties(level);
 
         BitBoard board = BitBoard.FromMainGameData(gameData);
-        InfoLog($"AI思考開始 ({gameData._AIStrength}: 深さ{_maxDepth}  残りマス={board.EmptyCount})");
+        InfoLog($"AI思考開始 (レベル{level}: 中盤{_maxDepth}手読み・残り{_perfectSolveEmpties}マスから完全読み  残りマス={board.EmptyCount})");
         _tt.Clear();
 
         // Killer Move テーブル初期化
@@ -143,28 +135,34 @@ public class OthelloAI
         // History Heuristic テーブルリセット
         Array.Clear(_historyTable, 0, 64);
 
+        // 決めた深さを最後まで読む(途中で打ち切らない)。1手10秒以内に終わるようにするのは、探索を速くして達成する
+        int bestMove = board.EmptyCount <= _perfectSolveEmpties
+            ? SolvePerfectRoot(board)
+            : IterativeDeepening(board, _maxDepth);
+
+        if (!_perfSolveTriggered)
+        {
+            BitBoardEvaluate(board.DoMove(bestMove), out EvalDetail bestDetail);
+            DebugLog($"評価内訳(最善手{BitBoard.BitToCoord(bestMove)}, AI視点): 位置={-bestDetail.Position * bestDetail.PosWeight}  機動力={-bestDetail.Mobility * bestDetail.MobWeight}  安定石={-bestDetail.Stability * bestDetail.StaWeight}  駒数差={-bestDetail.StoneDiff * bestDetail.DiffWeight}  合計={-bestDetail.Total}");
+        }
+
+        DebugLog($"探索統計: αβカット={_abCutCount}  PVS再探索={_pvsResearchCount}  完全読み={(_perfSolveTriggered ? "あり" : "なし")}");
+        DebugLog($"置換表: ヒット={_tt.HitCount} ({_tt.HitRate:F1}%)  ミス={_tt.MissCount}");
+
+        GameLog($"AI評価\nレベル:{level} 探索深さ:{_maxDepth} 完全読み:{_perfSolveTriggered} 総計算手順回数：{_recursionsCount} 最良手:{BitBoard.BitToCoord(bestMove)}");
+        StopAILog();
+
+        return BitBoard.BitToCoord(bestMove);
+    }
+
+    /// <summary>反復深化で maxDepth まで読み、最善手を返す</summary>
+    private int IterativeDeepening(BitBoard board, int maxDepth)
+    {
         int bestMove = -1;
         int prevScore = 0; // Aspiration Window 用（前の深さのスコア）
 
-        for (int depth = 1; depth <= _maxDepth; depth++)
+        for (int depth = 1; depth <= maxDepth; depth++)
         {
-            // ルートが完全読み閾値以下なら完全読みを直接実行（NegaScout途中からの完全読みを防ぐ）
-            if (board.EmptyCount <= PerfectSolveThreshold)
-            {
-                _perfSolveTriggered = true;
-                InfoLog($"残り{board.EmptyCount}マス → 完全読みモードへ切り替え");
-                int perfScore = SolvePerfect(board, -Inf, Inf);
-                // 置換表からルートの最善手を取得
-                ulong rootHash = _tt.ComputeHash(board);
-                if (_tt.TryGetBestMoveOnly(rootHash, out int ttBest) && ttBest >= 0)
-                    bestMove = ttBest;
-                string perfScoreStr = Math.Abs(perfScore) >= WinScore
-                    ? (perfScore > 0 ? $"勝ち(+{perfScore - WinScore}石差)" : $"負け(-{-perfScore - WinScore}石差)")
-                    : $"{perfScore}（引き分け）";
-                InfoLog($"完全読み完了: 最善手={BitBoard.BitToCoord(bestMove)}  スコア={perfScoreStr}  ノード={_recursionsCount}");
-                break;
-            }
-
             for (int i = 0; i < 64; i++) _historyTable[i] >>= 1;
 
             int iterBest = -1;
@@ -200,20 +198,26 @@ public class OthelloAI
 
             InfoLog($"深さ {depth,2} 完了: 最善手={BitBoard.BitToCoord(bestMove)}  スコア={score,10}  ノード={_recursionsCount}");
         }
+        return bestMove;
+    }
 
-        if (bestMove >= 0 && !_perfSolveTriggered)
-        {
-            BitBoardEvaluate(board.DoMove(bestMove), out EvalDetail bestDetail);
-            DebugLog($"評価内訳(最善手{BitBoard.BitToCoord(bestMove)}, AI視点): 位置={-bestDetail.Position * bestDetail.PosWeight}  機動力={-bestDetail.Mobility * bestDetail.MobWeight}  安定石={-bestDetail.Stability * bestDetail.StaWeight}  駒数差={-bestDetail.StoneDiff * bestDetail.DiffWeight}  合計={-bestDetail.Total}");
-        }
+    /// <summary>完全読みで最善手を求める</summary>
+    private int SolvePerfectRoot(BitBoard board)
+    {
+        InfoLog($"残り{board.EmptyCount}マス → 完全読みモードへ切り替え");
+        int perfScore = SolvePerfect(board, -Inf, Inf);
+        _perfSolveTriggered = true;
 
-        DebugLog($"探索統計: αβカット={_abCutCount}  PVS再探索={_pvsResearchCount}  完全読み={(_perfSolveTriggered ? "あり" : "なし")}");
-        DebugLog($"置換表: ヒット={_tt.HitCount} ({_tt.HitRate:F1}%)  ミス={_tt.MissCount}");
-
-        GameLog($"AI評価\n探索深さ:{_maxDepth} 総計算手順回数：{_recursionsCount} 最良手:{BitBoard.BitToCoord(bestMove)}");
-        StopAILog();
-
-        return BitBoard.BitToCoord(bestMove);
+        // 置換表からルートの最善手を取得
+        ulong rootHash = _tt.ComputeHash(board);
+        int bestMove = _tt.TryGetBestMoveOnly(rootHash, out int ttBest) && ttBest >= 0
+            ? ttBest
+            : BitBoard.GetMoveList(board.GetMoves())[0];
+        string perfScoreStr = Math.Abs(perfScore) >= WinScore
+            ? (perfScore > 0 ? $"勝ち(+{perfScore - WinScore}石差)" : $"負け(-{-perfScore - WinScore}石差)")
+            : $"{perfScore}（引き分け）";
+        InfoLog($"完全読み完了: 最善手={BitBoard.BitToCoord(bestMove)}  スコア={perfScoreStr}  ノード={_recursionsCount}");
+        return bestMove;
     }
 
     /// <summary>
@@ -367,8 +371,7 @@ public class OthelloAI
             {
                 bestScore = score;
                 localBestMove = move;
-                if (depth == _maxDepth || board.EmptyCount > PerfectSolveThreshold)
-                    bestMove = move;
+                bestMove = move; // 子の局面では使われない(呼び出し側が捨てる ref を渡す)。ルートの最善手になる
             }
 
             alpha = Math.Max(alpha, score);
@@ -914,12 +917,4 @@ public class OthelloAI
 
         return (BitOperations.PopCount(stableMine), BitOperations.PopCount(stableOpp));
     }
-}
-
-public enum AIStrength
-{
-    Beginner,
-    Normal,
-    Expert,
-    Professional
 }

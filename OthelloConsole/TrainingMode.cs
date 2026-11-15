@@ -15,9 +15,9 @@ public static class GameRunner
     /// openingMoves: 序盤の何手をランダムに打つか（0=完全決定論的）
     /// </summary>
     /// <returns>(黒の最終駒数, 白の最終駒数)</returns>
-    public static (int black, int white) Play(WeightSet w1, WeightSet w2, AIStrength strength, int openingMoves = 4)
+    public static (int black, int white) Play(WeightSet w1, WeightSet w2, int level, int openingMoves = 4)
     {
-        var gameData = InitGameData(strength);
+        var gameData = InitGameData(level);
         var ai1 = new OthelloAI(w1);
         var ai2 = new OthelloAI(w2);
 
@@ -70,7 +70,7 @@ public static class GameRunner
     }
 
     /// <summary>ゲームデータを初期状態（8x8盤面、黒先手）に初期化して返す</summary>
-    private static MainGameData InitGameData(AIStrength strength)
+    private static MainGameData InitGameData(int level)
     {
         var data = new MainGameData();
         data._tilesSize = 8;
@@ -81,7 +81,7 @@ public static class GameRunner
         data._gameMode    = GameMode.AIvsAI;
         data._turnNum     = 1;               // 黒が先手
         data._turnCounter = 1;
-        data._AIStrength  = strength;
+        data._aiLevel     = level;
         return data;
     }
 }
@@ -100,8 +100,8 @@ public static class HillClimbTrainer
     /// </summary>
     /// <param name="maxIter">最大イテレーション数</param>
     /// <param name="gamesPerEval">1イテレーションあたりの対局数（多いほど安定するが遅い）</param>
-    /// <param name="strength">使用するAI強度（normalが速度と精度のバランスが良い）</param>
-    public static void Run(int maxIter, int gamesPerEval, AIStrength strength)
+    /// <param name="level">使用するAIのレベル（6が速度と精度のバランスが良い）</param>
+    public static void Run(int maxIter, int gamesPerEval, int level)
     {
         Directory.CreateDirectory(WeightsDir);
         string savePath = Path.Combine(WeightsDir, "best_weights.json");
@@ -115,7 +115,7 @@ public static class HillClimbTrainer
         else
             Console.WriteLine("デフォルト重みから学習を開始します。");
 
-        Console.WriteLine($"設定: {maxIter}イテレーション / {gamesPerEval}ゲーム/評価 / AI強度:{strength}");
+        Console.WriteLine($"設定: {maxIter}イテレーション / {gamesPerEval}ゲーム/評価 / AIレベル:{level}");
         Console.WriteLine("Ctrl+C で中断できます（中断前の最善重みは自動保存済み）\n");
 
         int totalAdopted = 0;
@@ -135,8 +135,8 @@ public static class HillClimbTrainer
                     // 手番を交互に入れ替えて公平な評価（先手有利・後手有利を相殺）
                     bool candidateIsBlack = (g % 2 == 0);
                     (int b, int w) = candidateIsBlack
-                        ? GameRunner.Play(candidate, current, strength)
-                        : GameRunner.Play(current, candidate, strength);
+                        ? GameRunner.Play(candidate, current, level)
+                        : GameRunner.Play(current, candidate, level);
 
                     int candidateScore = candidateIsBlack ? b : w;
                     int currentScore   = candidateIsBlack ? w : b;
@@ -334,10 +334,10 @@ public static class SATrainer
     /// </summary>
     /// <param name="maxIter">最大イテレーション数</param>
     /// <param name="gamesPerEval">1イテレーションあたりの対局数</param>
-    /// <param name="strength">使用するAI強度</param>
+    /// <param name="level">使用するAIのレベル</param>
     /// <param name="t0">初期温度（石数単位。大きいほど序盤に多様探索）</param>
     /// <param name="tf">終了温度（デフォルト0.1で終盤はほぼ貪欲探索）</param>
-    public static void Run(int maxIter, int gamesPerEval, AIStrength strength,
+    public static void Run(int maxIter, int gamesPerEval, int level,
                            double t0 = 5.0, double tf = 0.1)
     {
         Directory.CreateDirectory(WeightsDir);
@@ -354,7 +354,7 @@ public static class SATrainer
         else
             Console.WriteLine("デフォルト重みから学習を開始します。");
 
-        Console.WriteLine($"設定: {maxIter}イテレーション / {gamesPerEval}ゲーム/評価 / AI強度:{strength}");
+        Console.WriteLine($"設定: {maxIter}イテレーション / {gamesPerEval}ゲーム/評価 / AIレベル:{level}");
         Console.WriteLine($"アルゴリズム: 焼きなまし法  T0={t0:F1}石 → Tf={tf:F2}石（幾何冷却）");
         Console.WriteLine("Ctrl+C で中断できます（中断前の最善重みは自動保存済み）\n");
 
@@ -384,8 +384,8 @@ public static class SATrainer
                 {
                     bool candidateIsBlack = (g % 2 == 0);
                     (int b, int w) = candidateIsBlack
-                        ? GameRunner.Play(candidate, current, strength)
-                        : GameRunner.Play(current, candidate, strength);
+                        ? GameRunner.Play(candidate, current, level)
+                        : GameRunner.Play(current, candidate, level);
 
                     int candidateScore = candidateIsBlack ? b : w;
                     int currentScore   = candidateIsBlack ? w : b;
@@ -428,8 +428,8 @@ public static class SATrainer
                     {
                         bool currentIsBlack = (g % 2 == 0);
                         (int b, int w) = currentIsBlack
-                            ? GameRunner.Play(current, best, strength)
-                            : GameRunner.Play(best, current, strength);
+                            ? GameRunner.Play(current, best, level)
+                            : GameRunner.Play(best, current, level);
                         int cs = currentIsBlack ? b : w;
                         int bs = currentIsBlack ? w : b;
                         bestMargin += cs - bs;

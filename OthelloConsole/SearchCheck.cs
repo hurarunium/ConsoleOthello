@@ -26,8 +26,8 @@ public static class SearchCheck
         try
         {
             CheckEndgame(positions, empties: 12, seed: 7);
-            CheckMidgame(positions, AIStrength.Beginner, depth: 3, seed: 11);
-            CheckMidgame(positions, AIStrength.Normal, depth: 6, seed: 13);
+            CheckMidgame(positions, level: 3, seed: 11);
+            CheckMidgame(positions, level: 6, seed: 13);
         }
         finally
         {
@@ -38,6 +38,7 @@ public static class SearchCheck
     /// <summary>
     /// 終盤の確認。単純な完全読みで全部の手の正しい値(最終の石数の差)を出し、
     /// OthelloAI が選んだ手が最善の値を持つかを見る。
+    /// OthelloAI は、残り empties マスから完全読みに入るレベル(empties / 2)で動かす。
     /// </summary>
     private static void CheckEndgame(int count, int empties, int seed)
     {
@@ -48,7 +49,8 @@ public static class SearchCheck
 
         for (int checkedCount = 0; checkedCount < count;)
         {
-            if (!TryCreatePosition(random, 60 - empties, AIStrength.Normal, out MainGameData gameData, out BitBoard board)) continue;
+            int level = empties / 2; // レベルNは残り2Nマスから完全読み
+            if (!TryCreatePosition(random, 60 - empties, level, out MainGameData gameData, out BitBoard board)) continue;
             checkedCount++;
 
             int chosenMove = ChooseMove(gameData);
@@ -69,8 +71,9 @@ public static class SearchCheck
     /// 中盤の確認。同じ評価関数・同じ深さの単純なαβ探索で全部の手の値を出し、
     /// OthelloAI が選んだ手が最善の値を持つかを見る。
     /// </summary>
-    private static void CheckMidgame(int count, AIStrength strength, int depth, int seed)
+    private static void CheckMidgame(int count, int level, int seed)
     {
+        int depth = AiLevel.MidgameDepth(level);
         var random = new Random(seed);
         var evaluator = new OthelloAI(WeightSet.Default());
         int mismatches = 0;
@@ -78,7 +81,7 @@ public static class SearchCheck
         for (int checkedCount = 0; checkedCount < count;)
         {
             int discs = random.Next(14, 40); // 序盤〜中盤(完全読みに入らない範囲)
-            if (!TryCreatePosition(random, discs - 4, strength, out MainGameData gameData, out BitBoard board)) continue;
+            if (!TryCreatePosition(random, discs - 4, level, out MainGameData gameData, out BitBoard board)) continue;
             checkedCount++;
 
             int chosenMove = ChooseMove(gameData);
@@ -87,7 +90,7 @@ public static class SearchCheck
             if (chosenValue != bestValue) mismatches++;
         }
 
-        Console.WriteLine($"[参考] 中盤({strength}、深さ{depth}): {count}局面中 {mismatches}局面で最善でない手(LMRの近似による食い違いを含む)");
+        Console.WriteLine($"[参考] 中盤(レベル{level}、深さ{depth}): {count}局面中 {mismatches}局面で最善でない手(LMRの近似による食い違いを含む)");
     }
 
     /// <summary>OthelloAI に手を選ばせ、ビット位置で返す。毎回新しく作り、置換表などの持ち越しをなくす</summary>
@@ -169,13 +172,13 @@ public static class SearchCheck
     /// 初期局面からランダムに指定の手数だけ打った局面を作る。
     /// 途中で終局した場合と、できた局面で手番の側が打てない場合は false を返す。
     /// </summary>
-    private static bool TryCreatePosition(Random random, int moves, AIStrength strength,
+    private static bool TryCreatePosition(Random random, int moves, int level,
                                           out MainGameData gameData, out BitBoard board)
     {
         gameData = new MainGameData
         {
             _tilesSize = 8, _tiles = new int[8, 8], _gameTurn = GameTurn.AI, _gameMode = GameMode.AIvsAI,
-            _turnNum = 1, _turnCounter = 1, _AIStrength = strength,
+            _turnNum = 1, _turnCounter = 1, _aiLevel = level,
         };
         gameData._tiles[3, 3] = 2; gameData._tiles[3, 4] = 1;
         gameData._tiles[4, 3] = 1; gameData._tiles[4, 4] = 2;

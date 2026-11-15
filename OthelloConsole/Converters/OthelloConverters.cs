@@ -19,17 +19,11 @@ public class GameModeConverter : IValueConverter
         => throw new NotImplementedException();
 }
 
-public class AiStrengthConverter : IValueConverter
+/// <summary>AIのレベル(1〜15)を「レベル N」と表示する</summary>
+public class AiLevelConverter : IValueConverter
 {
     public object? Convert(object? value, Type _, object? __, CultureInfo ___)
-        => value is AIStrength s ? s switch
-        {
-            AIStrength.Beginner     => "初心者",
-            AIStrength.Normal       => "普通",
-            AIStrength.Expert       => "上級者",
-            AIStrength.Professional => "プロ",
-            _                       => value.ToString()
-        } : null;
+        => value is int level ? $"レベル {level}" : null;
 
     public object? ConvertBack(object? v, Type t, object? p, CultureInfo c)
         => throw new NotImplementedException();

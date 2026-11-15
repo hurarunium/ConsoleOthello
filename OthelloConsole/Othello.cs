@@ -120,26 +120,16 @@ public class Othello
         }
         if (_game._gameData._gameMode == GameMode.PlayervsAI || _game._gameData._gameMode == GameMode.AIvsAI)
         {
-            Console.WriteLine("AIの強さを選択してください:初心者(1) 普通(2) 上級者(3) プロ(4)");
+            Console.WriteLine($"AIのレベルを入力してください({AiLevel.Min}〜{AiLevel.Max}。レベルNは中盤でN手先まで読みます)");
             string aiInput = Console.ReadLine() ?? "";
-            switch (aiInput)
+            if (AiLevel.TryParse(aiInput, out int level))
             {
-                case "1":
-                    _game._gameData._AIStrength = AIStrength.Beginner;
-                    break;
-                case "2":
-                    _game._gameData._AIStrength = AIStrength.Normal;
-                    break;
-                case "3":
-                    _game._gameData._AIStrength = AIStrength.Expert;
-                    break;
-                case "4":
-                    _game._gameData._AIStrength = AIStrength.Professional;
-                    break;
-                default:
-                    Console.WriteLine("無効な入力です。普通モードに進みます。");
-                    _game._gameData._AIStrength = AIStrength.Normal;
-                    break;
+                _game._gameData._aiLevel = level;
+            }
+            else
+            {
+                Console.WriteLine($"無効な入力です。レベル{AiLevel.Default}に進みます。");
+                _game._gameData._aiLevel = AiLevel.Default;
             }
         }
 
@@ -167,13 +157,8 @@ public class Othello
         Console.WriteLine("1評価あたりのゲーム数を入力してください（デフォルト: 20）:");
         int gamesPerEval = int.TryParse(Console.ReadLine(), out int gpe) && gpe > 0 ? gpe : 20;
 
-        Console.WriteLine("AI強度を選択してください: 初心者(1) 普通(2) 上級者(3)  [デフォルト: 普通]");
-        AIStrength trainStrength = Console.ReadLine() switch
-        {
-            "1" => AIStrength.Beginner,
-            "3" => AIStrength.Expert,
-            _ => AIStrength.Normal
-        };
+        Console.WriteLine($"AIのレベルを入力してください({AiLevel.Min}〜{AiLevel.Max})  [デフォルト: {AiLevel.Default}]");
+        int trainLevel = AiLevel.TryParse(Console.ReadLine(), out int level) ? level : AiLevel.Default;
 
         Console.WriteLine("学習アルゴリズムを選択してください: ヒルクライミング(1) 焼きなまし法(2)  [デフォルト: 焼きなまし法]");
         string algoChoice = Console.ReadLine() ?? "";
@@ -181,14 +166,14 @@ public class Othello
         Console.Clear();
         if (algoChoice == "1")
         {
-            HillClimbTrainer.Run(maxIter, gamesPerEval, trainStrength);
+            HillClimbTrainer.Run(maxIter, gamesPerEval, trainLevel);
         }
         else
         {
             Console.WriteLine("初期温度 T0 を入力してください（デフォルト: 5.0 石）:");
             Console.WriteLine("  ※大きいほど序盤に広く探索。推奨範囲: 3〜10");
             double t0 = double.TryParse(Console.ReadLine(), out double tv) && tv > 0 ? tv : 5.0;
-            SATrainer.Run(maxIter, gamesPerEval, trainStrength, t0);
+            SATrainer.Run(maxIter, gamesPerEval, trainLevel, t0);
         }
     }
 
@@ -197,7 +182,7 @@ public class Othello
     /// </summary>
     async Task RunGame()
     {
-        GameLog($"ゲーム開始 モード;{_gameData._gameMode} 盤面サイズ:{_gameData._tilesSize} AI強さ:{_gameData._AIStrength}");
+        GameLog($"ゲーム開始 モード;{_gameData._gameMode} 盤面サイズ:{_gameData._tilesSize} AIレベル:{_gameData._aiLevel}");
         GameLog("=======================================================");
         while (true)
         {
@@ -236,6 +221,7 @@ public class Othello
                 // デバッグOFF時は3秒待機（結果を確認できるように）
                 // デバッグON時は即座に進む（ログで詳細が見えるため）
                 if (!_isDebug) await Task.Delay(3000);
+
             }
             else
             {

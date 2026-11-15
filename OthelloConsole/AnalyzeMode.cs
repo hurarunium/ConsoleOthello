@@ -11,7 +11,8 @@ using static OthelloSystem;
 ///
 /// 例: --analyze Data/collected/game_records.jsonl          (人間が勝った局をすべて)
 ///     --analyze Data/collected/game_records.jsonl --index 39 --level 18
-///     --analyze data/game_records.txt                       (全部の局)
+///     --analyze data/game_records.txt                       (全部の局。今のAIはレベル15)
+///     --analyze data/game_records.txt --our-level 5          (今のAIをレベル5にする)
 ///     --analyze data/game_records.txt --threads 4            (速くなるが、評価値が少しぶれる)
 /// </summary>
 public static class AnalyzeMode
@@ -22,8 +23,8 @@ public static class AnalyzeMode
     private const int PerfectSolveEmpties = 18;
     private const string DefaultEgaroucidPath = "../external/egaroucid/Egaroucid-console_v7.8.2/bin/Egaroucid_for_Console.out";
     private const string WeightsPath = "weights/best_weights.json";
-    /// <summary>f5d6形式の棋譜を分析するときの、今のAIの強さ(Phase 4でレベルに切り替える)</summary>
-    private const AIStrength TranscriptAiStrength = AIStrength.Professional;
+    /// <summary>f5d6形式の棋譜を分析するときの、今のAIのレベルの標準(--our-level で変えられる)</summary>
+    private const int DefaultTranscriptAiLevel = AiLevel.Max;
 
     /// <summary>1手分の分析結果</summary>
     private sealed record MoveAnalysis(
@@ -41,6 +42,11 @@ public static class AnalyzeMode
             throw new ArgumentException("--analyze のあとに棋譜ファイル(game_records.jsonl)を指定してください。");
         string recordsPath = args[fileIndex + 1];
         int level = int.Parse(ValueOf(args, "--level") ?? "18");
+        // f5d6形式の棋譜にはAIのレベルが残っていないので、今のAIのレベルを指定する。JSONLでは、指定があれば棋譜のレベルの代わりに使う
+        string? ourLevelText = ValueOf(args, "--our-level");
+        int? ourLevel = ourLevelText == null ? null
+                      : AiLevel.TryParse(ourLevelText, out int parsedLevel) ? parsedLevel
+                      : throw new ArgumentException($"--our-level は{AiLevel.Min}〜{AiLevel.Max}にしてください。");
         string egaroucidPath = ValueOf(args, "--egaroucid") ?? DefaultEgaroucidPath;
         // 複数スレッドで読むと読む順番が毎回変わり、評価値が少しぶれる。同じ棋譜からいつも同じ報告を出すため、標準は1スレッド
         int threads = int.Parse(ValueOf(args, "--threads") ?? "1");
@@ -51,7 +57,7 @@ public static class AnalyzeMode
 
         bool isTranscriptFile = Path.GetExtension(recordsPath).Equals(".txt", StringComparison.OrdinalIgnoreCase);
         // JSONLは、指定がなければ人間が勝った局だけ。f5d6形式は勝ち負けがわからないので、指定がなければ全部の局
-        List<(int lineNumber, GameRecord record)> games = (isTranscriptFile ? LoadTranscripts(recordsPath) : LoadGames(recordsPath))
+        List<(int lineNumber, GameRecord record)> games = (isTranscriptFile ? LoadTranscripts(recordsPath, ourLevel ?? DefaultTranscriptAiLevel) : LoadGames(recordsPath))
             .Where(game => indexes.Count > 0 ? indexes.Contains(game.lineNumber)
                                              : isTranscriptFile || game.record.Result == "win")
             .ToList();
@@ -68,7 +74,8 @@ public static class AnalyzeMode
         report.AppendLine($"- 棋譜: `{recordsPath}`");
         report.AppendLine($"- 評価: Egaroucid lv.{level}(定石の本なし、{threads}スレッド)。値は、その手を打った側から見た最終の石数の差の見込み");
         report.AppendLine($"- 損: 最善手の値 − 打った手の値。{BlunderThreshold}以上を悪手とする");
-        report.AppendLine($"- 今のAI: 同じ強さの、今のコードのAI(重み: {(File.Exists(WeightsPath) ? "best_weights.json" : "default")})が選ぶ手");
+        report.AppendLine($"- 今のAI: 棋譜と同じレベル(--our-level の指定があればそのレベル)の、今のコードのAI(重み: {(File.Exists(WeightsPath) ? "best_weights.json" : "default")})が選ぶ手");
+        report.AppendLine($"- 4段階だったころの棋譜は、中盤で読む手数が同じレベルに読み替える(Beginner→3、Normal→6、Expert→10、Professional→14)。当時はどれも残り18マスから完全読みしていたので、終盤の読み方は当時と違う");
         report.AppendLine();
 
         OthelloDebugLog.SuppressOutput = true;
@@ -77,8 +84,9 @@ public static class AnalyzeMode
             using var egaroucid = new EgaroucidClient(egaroucidPath, level, threads, useBook: false);
             foreach ((int lineNumber, GameRecord record) in games)
             {
-                Console.WriteLine($"分析中: {lineNumber}行目({record.AiStrength}、{record.Moves.Count}手)");
-                List<MoveAnalysis> moves = AnalyzeGame(record, egaroucid, weights);
+                int gameLevel = ourLevel ?? LevelOf(record);
+                Console.WriteLine($"分析中: {lineNumber}行目(今のAIはレベル{gameLevel}、{record.Moves.Count}手)");
+                List<MoveAnalysis> moves = AnalyzeGame(record, gameLevel, egaroucid, weights);
                 AppendGameReport(report, lineNumber, record, moves);
             }
         }
@@ -116,9 +124,9 @@ public static class AnalyzeMode
 
     /// <summary>
     /// f5d6形式の棋譜を読む。行番号(1始まり)と一緒に返す。
-    /// 人間かAIかはわからないので Actor は空にし、強さは TranscriptAiStrength にする
+    /// 人間かAIかはわからないので Actor は空にし、AIのレベルは aiLevel にする
     /// </summary>
-    private static IEnumerable<(int lineNumber, GameRecord record)> LoadTranscripts(string path)
+    private static IEnumerable<(int lineNumber, GameRecord record)> LoadTranscripts(string path, int aiLevel)
     {
         int lineNumber = 0;
         foreach (string line in File.ReadLines(path))
@@ -130,7 +138,7 @@ public static class AnalyzeMode
             var (black, white) = Counting(replay.FinalTiles);
             var record = new GameRecord
             {
-                AiStrength = TranscriptAiStrength.ToString(),
+                AiLevel = aiLevel,
                 BlackCount = black,
                 WhiteCount = white,
                 Transcript = line.Trim(),
@@ -148,11 +156,14 @@ public static class AnalyzeMode
         }
     }
 
+    /// <summary>棋譜のAIのレベル。4段階だったころの棋譜は、強さの名前をレベルに読み替える</summary>
+    private static int LevelOf(GameRecord record)
+        => record.AiLevel > 0 ? record.AiLevel : AiLevel.FromLegacyStrengthName(record.AiStrength);
+
     /// <summary>1局を初手から並べ直し、パス以外の各手を分析する</summary>
-    private static List<MoveAnalysis> AnalyzeGame(GameRecord record, EgaroucidClient egaroucid, WeightSet weights)
+    private static List<MoveAnalysis> AnalyzeGame(GameRecord record, int aiLevel, EgaroucidClient egaroucid, WeightSet weights)
     {
-        AIStrength strength = Enum.Parse<AIStrength>(record.AiStrength, ignoreCase: true);
-        MainGameData gameData = CreateInitialGameData(strength);
+        MainGameData gameData = CreateInitialGameData(aiLevel);
         // この作りでは、AIが先手のとき白から打ち始めるので、1手目の色で手番を決める
         if (record.Moves.Count > 0 && record.Moves[0].Color == "white") gameData._turnNum = 2;
 
@@ -203,7 +214,7 @@ public static class AnalyzeMode
     {
         bool isTranscript = record.Moves.All(m => m.Actor == "");
         string players = isTranscript ? "f5d6形式(人間かAIかは不明)"
-                       : $"{record.AiStrength}、人間は{(record.HumanColor == "black" ? "黒" : "白")}";
+                       : $"{(record.AiLevel > 0 ? $"レベル{record.AiLevel}" : $"{record.AiStrength}(レベル{LevelOf(record)}に読み替え)")}、人間は{(record.HumanColor == "black" ? "黒" : "白")}";
         string startedAt = record.StartedAt.Length >= 16 ? $"({record.StartedAt[..16]})" : "";
         report.AppendLine($"## {lineNumber}行目: {players}、結果 黒{record.BlackCount} − 白{record.WhiteCount}{startedAt}");
         report.AppendLine();
@@ -218,7 +229,7 @@ public static class AnalyzeMode
                 report.AppendLine($"- {(color == "black" ? "黒" : "白")}の損の合計: {colorMoves.Sum(m => m.Loss)}石"
                                 + $"({colorMoves.Count}手、悪手{colorMoves.Count(m => m.Loss >= BlunderThreshold)}手)");
             }
-            report.AppendLine($"- 今のAI({TranscriptAiStrength})なら: 損の合計 {targetMoves.Sum(m => m.CurrentAiLoss ?? 0)}石"
+            report.AppendLine($"- 今のAI(レベル{record.AiLevel})なら: 損の合計 {targetMoves.Sum(m => m.CurrentAiLoss ?? 0)}石"
                             + $"(悪手 {targetMoves.Count(m => m.CurrentAiLoss >= BlunderThreshold)}手)");
         }
         else
@@ -250,12 +261,12 @@ public static class AnalyzeMode
         return black + white;
     }
 
-    private static MainGameData CreateInitialGameData(AIStrength strength)
+    private static MainGameData CreateInitialGameData(int aiLevel)
     {
         var gameData = new MainGameData
         {
             _tilesSize = 8, _tiles = new int[8, 8], _gameTurn = GameTurn.AI, _gameMode = GameMode.AIvsAI,
-            _turnNum = 1, _turnCounter = 1, _AIStrength = strength,
+            _turnNum = 1, _turnCounter = 1, _aiLevel = aiLevel,
         };
         gameData._tiles[3, 3] = 2; gameData._tiles[3, 4] = 1;
         gameData._tiles[4, 3] = 1; gameData._tiles[4, 4] = 2;

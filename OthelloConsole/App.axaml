@@ -8,7 +8,7 @@
   </Application.Styles>
   <Application.Resources>
     <conv:GameModeConverter   x:Key="GameModeConverter" />
-    <conv:AiStrengthConverter x:Key="AiStrengthConverter" />
+    <conv:AiLevelConverter    x:Key="AiLevelConverter" />
     <conv:PieceColorConverter x:Key="PieceColorConverter" />
     <conv:HasPieceConverter   x:Key="HasPieceConverter" />
     <conv:LastMoveBgConverter x:Key="LastMoveBgConverter" />
