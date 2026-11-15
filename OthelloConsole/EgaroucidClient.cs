@@ -84,6 +84,37 @@ public sealed partial class EgaroucidClient : IDisposable
         }
     }
 
+    /// <summary>
+    /// 盤面と手番を渡し、合法手すべての評価値を返す(Egaroucidの hint)。
+    /// 評価値は、手番の側から見た最終の石数の差の見込み。
+    /// 呼び出し側は、手番の側に合法手があることを確かめてから呼ぶ。
+    /// </summary>
+    /// <param name="tiles">盤面。tiles[行, 列]、0=空、1=黒、2=白</param>
+    /// <param name="turnNum">手番(1=黒、2=白)</param>
+    /// <param name="legalMoveCount">合法手の数。この数だけ評価値の行を読む</param>
+    /// <returns>1始まりの(行, 列)ごとの評価値</returns>
+    public Dictionary<(int row, int col), int> GetMoveValues(int[,] tiles, int turnNum, int legalMoveCount)
+    {
+        _process.StandardInput.WriteLine($"setboard {ToBoardString(tiles)} {(turnNum == 1 ? 'B' : 'W')}");
+        _process.StandardInput.WriteLine($"hint {legalMoveCount}");
+        _process.StandardInput.Flush();
+
+        var values = new Dictionary<(int row, int col), int>();
+        while (values.Count < legalMoveCount)
+        {
+            string? line = _process.StandardOutput.ReadLineAsync().WaitAsync(MoveTimeout).GetAwaiter().GetResult();
+            if (line == null)
+                throw new InvalidOperationException("Egaroucidが途中で終了しました。");
+
+            // 例: |  18|  18@100%|  f6|  +1|  000:00:00.001|  52679|  52679000|
+            Match match = HintRowRegex().Match(line);
+            if (!match.Success) continue;
+            string move = match.Groups[1].Value.ToLowerInvariant();
+            values[(move[1] - '0', move[0] - 'a' + 1)] = int.Parse(match.Groups[2].Value);
+        }
+        return values;
+    }
+
     /// <summary>盤面をEgaroucidの setboard の形式(a1, b1, …, h8 の順に B/W/-)にする</summary>
     private static string ToBoardString(int[,] tiles)
     {
@@ -100,6 +131,9 @@ public sealed partial class EgaroucidClient : IDisposable
 
     [GeneratedRegex(@"([a-hA-H][1-8])\s*$")]
     private static partial Regex MoveRegex();
+
+    [GeneratedRegex(@"\|\s*\d+\|\s*\S+\|\s*([a-hA-H][1-8])\|\s*([+-]?\d+)\|")]
+    private static partial Regex HintRowRegex();
 
     public void Dispose()
     {
