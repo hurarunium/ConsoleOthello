@@ -151,13 +151,14 @@ public class TranspositionTable
     }
 
     /// <summary>
-    /// ETC（Enhanced Transposition Cutoff）用：深さチェックなしで置換表エントリを取得する。
+    /// ETC（Enhanced Transposition Cutoff）用：αβの窓を見ずに置換表エントリを取得する。
     /// 子局面のカットオフ可能性を事前に検出するために使用する。
+    /// minDepth より浅い探索の値は返さない(完全読みの中で、浅い中盤の探索の評価値を、正しい値と取り違えないため)
     /// </summary>
-    public bool TryGetRaw(ulong hash, out TTEntryType type, out int score)
+    public bool TryGetRaw(ulong hash, int minDepth, out TTEntryType type, out int score)
     {
         ref TTEntry entry = ref _table[hash & TableMask];
-        if (entry.Hash == hash)
+        if (entry.Hash == hash && entry.Depth >= minDepth)
         {
             type  = entry.Type;
             score = entry.Score;

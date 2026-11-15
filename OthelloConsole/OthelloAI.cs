@@ -499,7 +499,7 @@ public class OthelloAI
             // 子局面の置換表を事前確認し、βカット可能なら即座に枝刈りする。
             // 子のUpperBound S ≤ -beta → 子の真値 ≤ S ≤ -beta → 親は ≥ beta（βカット）
             ulong childHash = _tt.ComputeHash(next);
-            if (_tt.TryGetRaw(childHash, out TTEntryType childType, out int childRawScore)
+            if (_tt.TryGetRaw(childHash, 64, out TTEntryType childType, out int childRawScore)
                 && childType == TTEntryType.UpperBound && childRawScore <= -beta)
             {
                 _abCutCount++;
