@@ -75,6 +75,18 @@ public class OthelloAI
     private readonly WeightSet _weights;
     private readonly int[] _positionTable;
 
+    /// <summary>
+    /// パターン評価を使うときに入れる(設計書 Phase 5〜6 の間は、今の評価関数と --eval で切り替えて比べる)。
+    /// null なら今の評価関数(BitBoardEvaluate)を使う
+    /// </summary>
+    private readonly PatternEvaluator? _patternEvaluator;
+
+    /// <summary>パターン評価で生成</summary>
+    public OthelloAI(PatternEvaluator patternEvaluator) : this(WeightSet.Default())
+    {
+        _patternEvaluator = patternEvaluator;
+    }
+
     /// <summary>デフォルト重みで生成（既存コードとの後方互換）</summary>
     public OthelloAI() : this(WeightSet.Default()) { }
 
@@ -562,6 +574,12 @@ public class OthelloAI
 
     private int BitBoardEvaluate(BitBoard board, out EvalDetail detail)
     {
+        if (_patternEvaluator != null)
+        {
+            detail = default; // パターン評価には特徴ごとの内訳がない
+            return _patternEvaluator.Evaluate(board);
+        }
+
         int total = board.PlayerCount + board.OpponentCount;
         detail = default;
 

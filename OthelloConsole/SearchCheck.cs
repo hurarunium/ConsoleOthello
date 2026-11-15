@@ -10,6 +10,7 @@ using static OthelloSystem;
 ///   使うので、中盤の食い違いは近似によるものも含む。
 ///
 /// 例: --search-check --positions 200
+///     --search-check --eval pattern      (パターン評価で確かめる)
 /// </summary>
 public static class SearchCheck
 {
@@ -22,12 +23,15 @@ public static class SearchCheck
         int index = Array.IndexOf(args, "--positions");
         int positions = index >= 0 && index + 1 < args.Length ? int.Parse(args[index + 1]) : 200;
 
+        EvaluatorOption.Choice evaluator = EvaluatorOption.Parse(args);
+        Console.WriteLine($"評価関数: {evaluator.Description}");
+
         OthelloDebugLog.SuppressOutput = true;
         try
         {
-            CheckEndgame(positions, empties: 12, seed: 7);
-            CheckMidgame(positions, level: 3, seed: 11);
-            CheckMidgame(positions, level: 6, seed: 13);
+            CheckEndgame(positions, empties: 12, seed: 7, evaluator.CreateAi);
+            CheckMidgame(positions, level: 3, seed: 11, evaluator.CreateAi);
+            CheckMidgame(positions, level: 6, seed: 13, evaluator.CreateAi);
         }
         finally
         {
@@ -40,7 +44,7 @@ public static class SearchCheck
     /// OthelloAI が選んだ手が最善の値を持つかを見る。
     /// OthelloAI は、残り empties マスから完全読みに入るレベル(empties / 2)で動かす。
     /// </summary>
-    private static void CheckEndgame(int count, int empties, int seed)
+    private static void CheckEndgame(int count, int empties, int seed, Func<OthelloAI> createAi)
     {
         var random = new Random(seed);
         int mismatches = 0;
@@ -53,7 +57,7 @@ public static class SearchCheck
             if (!TryCreatePosition(random, 60 - empties, level, out MainGameData gameData, out BitBoard board)) continue;
             checkedCount++;
 
-            int chosenMove = ChooseMove(gameData);
+            int chosenMove = ChooseMove(gameData, createAi);
             (int bestValue, int chosenValue) = ScoreMoves(board, chosenMove, next => -Solve(next, -64, 64));
             if (chosenValue == bestValue) continue;
 
@@ -71,11 +75,11 @@ public static class SearchCheck
     /// 中盤の確認。同じ評価関数・同じ深さの単純なαβ探索で全部の手の値を出し、
     /// OthelloAI が選んだ手が最善の値を持つかを見る。
     /// </summary>
-    private static void CheckMidgame(int count, int level, int seed)
+    private static void CheckMidgame(int count, int level, int seed, Func<OthelloAI> createAi)
     {
         int depth = AiLevel.MidgameDepth(level);
         var random = new Random(seed);
-        var evaluator = new OthelloAI(WeightSet.Default());
+        OthelloAI evaluator = createAi();
         int mismatches = 0;
 
         for (int checkedCount = 0; checkedCount < count;)
@@ -84,7 +88,7 @@ public static class SearchCheck
             if (!TryCreatePosition(random, discs - 4, level, out MainGameData gameData, out BitBoard board)) continue;
             checkedCount++;
 
-            int chosenMove = ChooseMove(gameData);
+            int chosenMove = ChooseMove(gameData, createAi);
             (int bestValue, int chosenValue) = ScoreMoves(board, chosenMove,
                 next => -AlphaBeta(next, depth - 1, -Infinity, Infinity, evaluator));
             if (chosenValue != bestValue) mismatches++;
@@ -94,9 +98,9 @@ public static class SearchCheck
     }
 
     /// <summary>OthelloAI に手を選ばせ、ビット位置で返す。毎回新しく作り、置換表などの持ち越しをなくす</summary>
-    private static int ChooseMove(MainGameData gameData)
+    private static int ChooseMove(MainGameData gameData, Func<OthelloAI> createAi)
     {
-        var ai = new OthelloAI(WeightSet.Default());
+        OthelloAI ai = createAi();
         (int row, int col) chosen = ai.AI(gameData, false);
         return BitBoard.CoordToBit(chosen.row, chosen.col);
     }

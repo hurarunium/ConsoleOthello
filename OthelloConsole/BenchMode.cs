@@ -24,7 +24,7 @@ public sealed class BenchOptions
     /// <summary>
     /// 起動の引数を読み取る。
     /// 例: --bench --our-level 5 --level 5 --games 40 --opening-moves 8 --seed 1
-    /// (--level は Egaroucid のレベル、--our-level は自分のAIのレベル)
+    /// (--level は Egaroucid のレベル、--our-level は自分のAIのレベル。評価関数は --eval legacy|pattern で選ぶ)
     /// </summary>
     public static BenchOptions Parse(string[] args)
     {
@@ -113,14 +113,14 @@ public sealed class BenchSummary
 /// </summary>
 public static class BenchMode
 {
-    private const string WeightsPath = "weights/best_weights.json";
     private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
 
     public static void Run(string[] args)
     {
         BenchOptions options = BenchOptions.Parse(args);
-        string weightsSource = File.Exists(WeightsPath) ? "best_weights.json" : "default";
-        var ai = new OthelloAI(File.Exists(WeightsPath) ? WeightSet.Load(WeightsPath) : WeightSet.Default());
+        EvaluatorOption.Choice evaluator = EvaluatorOption.Parse(args);
+        string weightsSource = evaluator.Description;
+        OthelloAI ai = evaluator.CreateAi();
 
         DateTimeOffset startedAt = DateTimeOffset.Now;
         Directory.CreateDirectory(options.OutputDirectory);
