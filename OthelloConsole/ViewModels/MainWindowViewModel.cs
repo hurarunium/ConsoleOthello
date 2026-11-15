@@ -115,7 +115,7 @@ public partial class MainWindowViewModel : ViewModelBase
             _gameMode    = SelectedGameMode,
             _AIStrength  = SelectedAiStrength,
             _gameTurn    = aiGoesFirst ? GameTurn.AI    : GameTurn.Player,
-            _turnNum     = aiGoesFirst ? 2              : 1,
+            _turnNum     = 1, // どのモードでも黒から打ち始める。人間が後攻なら、AIが黒・人間が白
             _turnCounter = 1,
             _tiles       = new int[8, 8]
         };
@@ -131,7 +131,6 @@ public partial class MainWindowViewModel : ViewModelBase
             StartedAt     = DateTimeOffset.Now.ToString("o"),
             GameMode      = SelectedGameMode.ToString(),
             AiStrength    = SelectedAiStrength.ToString(),
-            // 先手・後手に関わらず、人間はいつも _turnNum == 1(黒)。AIが先手のときは白から打ち始める
             HumanColor    = SelectedGameMode == GameMode.PlayervsAI ? HumanColorName() : "",
             WeightsSource = _weightsSource,
         };
@@ -280,7 +279,6 @@ public partial class MainWindowViewModel : ViewModelBase
 
         if (_gameData._gameMode == GameMode.PlayervsAI)
         {
-            // 以前は「先手なら黒」としていたが、後手を選んでも人間は黒なので、勝敗が逆に数えられていた
             if      (humanResult == "win")  { PlayerWins++;   _lastGameResult = GameResult.Win; }
             else if (humanResult == "loss") { PlayerLosses++; _lastGameResult = GameResult.Loss; }
             else                            { PlayerDraws++;  _lastGameResult = GameResult.Draw; }

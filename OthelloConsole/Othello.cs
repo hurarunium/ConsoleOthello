@@ -87,7 +87,6 @@ public class Othello
                 Console.WriteLine("AI対AIモードを選択しました。");
                 _game._gameData._gameMode = GameMode.AIvsAI;
                 _game._gameData._gameTurn = GameTurn.AI;
-                _game._gameData._turnNum = 2;
                 break;
             case "4":
                 Console.WriteLine("学習モードを選択しました。");
@@ -105,12 +104,12 @@ public class Othello
             switch (sizeInput)
             {
                 case "1":
-                    Console.WriteLine("あなたは先行です。");
+                    Console.WriteLine("あなたは先行(黒●)です。");
                     break;
                 case "2":
-                    Console.WriteLine("あなたは後攻です。");
+                    Console.WriteLine("あなたは後攻(白○)です。AIが黒●で先に打ちます。");
+                    // どのモードでも黒から打ち始める。人間が後攻なら、AIが黒・人間が白
                     _game._gameData._gameTurn = GameTurn.AI;
-                    _game._gameData._turnNum = 2;
                     break;
                 default:
                     Console.WriteLine("無効な入力です。先行に進みます。");
@@ -305,17 +304,30 @@ public class Othello
             {
                 Console.WriteLine("ゲーム終了：盤面に空きがありません。");
             }
-            Console.WriteLine($"最終結果: 敵(黒) {_player2FrameCounter}個 - プレイヤー(白) {_player1FrameCounter}個");
-            if (_player2FrameCounter > _player1FrameCounter)
-                Console.WriteLine("敵(黒)の勝ち！");
-            else if (_player1FrameCounter > _player2FrameCounter)
-                Console.WriteLine("プレイヤー(白)の勝ち！");
+            // _player1FrameCounter は黒(●)、_player2FrameCounter は白(○)の石数
+            Console.WriteLine($"最終結果: {ColorLabel(1)} {_player1FrameCounter}個 - {ColorLabel(2)} {_player2FrameCounter}個");
+            if (_player1FrameCounter > _player2FrameCounter)
+                Console.WriteLine($"{ColorLabel(1)}の勝ち！");
+            else if (_player2FrameCounter > _player1FrameCounter)
+                Console.WriteLine($"{ColorLabel(2)}の勝ち！");
             else
                 Console.WriteLine("引き分けです！");
             Console.WriteLine("=======================================================");
             return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// 色の表示名(例: 「黒●(あなた)」「白○(AI)」)。AI対戦では、人間とAIのどちらの色かも添える
+    /// </summary>
+    string ColorLabel(int turnNum)
+    {
+        string color = turnNum == 1 ? "黒●" : "白○";
+        if (_gameData._gameMode != GameMode.PlayervsAI) return color;
+        // _gameTurn と _turnNum は一緒に切り替わるので、いまの手番から人間の色がわかる
+        int humanTurnNum = _gameData._gameTurn == GameTurn.Player ? _gameData._turnNum : 3 - _gameData._turnNum;
+        return turnNum == humanTurnNum ? $"{color}(あなた)" : $"{color}(AI)";
     }
 
     /// <summary>
@@ -375,7 +387,7 @@ public class Othello
         {
             builder.Append("現在のターン: ○\n");
         }
-        builder.Append($"プレイヤー: {_player1FrameCounter}個    敵: {_player2FrameCounter}個\n");
+        builder.Append($"{ColorLabel(1)}: {_player1FrameCounter}個    {ColorLabel(2)}: {_player2FrameCounter}個\n");
 
         builder.Append("   ");
         for (int i = 0; i < _gameData._tilesSize; i++)
