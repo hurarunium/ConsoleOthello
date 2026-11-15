@@ -32,6 +32,11 @@ internal class Program
             SearchCheck.Run(args);
             return;
         }
+        if (args.Contains("--endgame-bench"))
+        {
+            EndgameBench.Run(args);
+            return;
+        }
         if (args.Contains("--bench"))
         {
             BenchMode.Run(args);

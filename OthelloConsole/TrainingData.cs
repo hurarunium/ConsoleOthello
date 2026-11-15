@@ -79,7 +79,8 @@ public static class TrainingData
     /// 形式: 16バイトのヘッダー(作成日・対局の数〈4バイト〉・…・盤の大きさ・理論値の深さ)のあと、1局68バイト
     /// (大会・黒・白の番号〈各2バイト〉、黒の石数、黒の理論的な石数、60手〈1手 = 行×10 + 列。0は終わり〉)
     /// </summary>
-    public static IEnumerable<TrainingSample> LoadWthor(string path)
+    /// minEmpties は、返す局面の空きマスの数の下限(学習では WthorMinEmpties。終盤の速さを測るときは小さくする)
+    public static IEnumerable<TrainingSample> LoadWthor(string path, int minEmpties = WthorMinEmpties)
     {
         IEnumerable<string> files = Directory.Exists(path)
             ? Directory.GetFiles(path, "*.wtb").OrderBy(f => f)
@@ -110,7 +111,7 @@ public static class TrainingData
                         throw new InvalidDataException($"{file} の{g + 1}局目に読めない手({code})があります。");
                     moves.Add((row - 1) * 8 + (col - 1));
                 }
-                foreach (TrainingSample sample in ReplayWithLabel(moves, blackDiff, WthorMinEmpties))
+                foreach (TrainingSample sample in ReplayWithLabel(moves, blackDiff, minEmpties))
                     yield return sample;
             }
         }
