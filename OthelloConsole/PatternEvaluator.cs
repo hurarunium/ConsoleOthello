@@ -149,6 +149,51 @@ public sealed class PatternEvaluator
         return index;
     }
 
+    // ─── 学習から使う入り口 ─────────────────────────────────────
+
+    /// <summary>
+    /// 1段階ぶんの表を、パターンの種類の順につなげた長さ(学習で使う重みの数)。
+    /// 番号 = パターンの種類の先頭位置(FeatureOffset) + 代表の番号
+    /// </summary>
+    public static int FeatureCountPerStage { get; } = Enumerable.Range(0, s_basePatterns.Length).Sum(p => Pow3(s_basePatterns[p].Length));
+
+    private static readonly int[] s_featureOffsets = Enumerable.Range(0, s_basePatterns.Length)
+        .Select(p => Enumerable.Range(0, p).Sum(q => Pow3(s_basePatterns[q].Length))).ToArray();
+
+    /// <summary>局面の46か所それぞれの、つなげた表の上の番号(代表の番号)を書き込む。destination の長さは InstanceCount 以上</summary>
+    public static void WriteFeatureIndices(BitBoard board, Span<int> destination)
+    {
+        for (int i = 0; i < s_instances.Length; i++)
+        {
+            (int pattern, int[] cells) = s_instances[i];
+            destination[i] = s_featureOffsets[pattern] + s_canonical[pattern][IndexOf(board, cells)];
+        }
+    }
+
+    /// <summary>
+    /// 学習した小数の重み(石数の単位)から作る。weights[段階] は長さ FeatureCountPerStage、bias[段階] は段階ごとの定数。
+    /// 保存のために Scale を掛けて16ビット整数に丸める(はみ出す値は端にそろえる)
+    /// </summary>
+    public static PatternEvaluator FromWeights(float[][] weights, float[] bias)
+    {
+        PatternEvaluator evaluator = CreateZero();
+        for (int s = 0; s < StageCount; s++)
+        {
+            evaluator._bias[s] = ToShort(bias[s]);
+            for (int p = 0; p < s_basePatterns.Length; p++)
+            {
+                int offset = s_featureOffsets[p];
+                short[] table = evaluator._tables[s][p];
+                // 代表の番号でない場所も、代表の値で埋めておく(ファイルを読んだ人が、どの番号を引いても同じ値になるように)
+                for (int i = 0; i < table.Length; i++) table[i] = ToShort(weights[s][offset + s_canonical[p][i]]);
+            }
+        }
+        return evaluator;
+    }
+
+    private static short ToShort(float discs)
+        => (short)Math.Clamp((int)MathF.Round(discs * Scale), short.MinValue, short.MaxValue);
+
     // ─── ファイルの保存・読み込み ────────────────────────────────
 
     /// <summary>
@@ -301,7 +346,12 @@ public sealed class PatternEvaluatorMeta
     /// <summary>検証用データでの誤差(石数の二乗平均平方根)。学習していないときは null</summary>
     public double? ValidationError { get; set; }
 
-    private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
+    // 人が読むファイルなので、日本語を \uXXXX に置き換えずにそのまま書く
+    private static readonly JsonSerializerOptions s_jsonOptions = new()
+    {
+        WriteIndented = true,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
 
     /// <summary>評価ファイルの隣に置く説明のファイルのパス(pattern_eval.bin → pattern_eval.meta.json)</summary>
     public static string PathFor(string evaluatorPath) => Path.ChangeExtension(evaluatorPath, ".meta.json");
