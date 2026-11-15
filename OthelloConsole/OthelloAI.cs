@@ -554,6 +554,9 @@ public class OthelloAI
     /// <summary>
     /// ビットボード用評価関数（現プレイヤー視点）。内訳を detail に返す。
     /// </summary>
+    /// <summary>評価関数だけを呼ぶ(探索の確認 SearchCheck で、同じ評価関数を使った単純な探索と比べるため)</summary>
+    internal int Evaluate(BitBoard board) => BitBoardEvaluate(board, out _);
+
     private int BitBoardEvaluate(BitBoard board, out EvalDetail detail)
     {
         int total = board.PlayerCount + board.OpponentCount;
