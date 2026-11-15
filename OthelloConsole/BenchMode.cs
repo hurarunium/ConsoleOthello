@@ -124,7 +124,9 @@ public static class BenchMode
 
         DateTimeOffset startedAt = DateTimeOffset.Now;
         Directory.CreateDirectory(options.OutputDirectory);
-        string baseName = $"bench-{startedAt:yyyyMMdd-HHmmss}-L{options.OurLevel}-lv{options.EgaroucidLevel}";
+        // 同じ秒に複数のベンチを並べて動かしても重ならないよう、乱数の種とプロセスの番号も入れる
+        string baseName = $"bench-{startedAt:yyyyMMdd-HHmmss}-L{options.OurLevel}-lv{options.EgaroucidLevel}"
+                        + $"-s{options.Seed}-p{Environment.ProcessId}";
         string gamesPath = Path.Combine(options.OutputDirectory, baseName + "-games.jsonl");
         string summaryPath = Path.Combine(options.OutputDirectory, baseName + "-summary.json");
 
