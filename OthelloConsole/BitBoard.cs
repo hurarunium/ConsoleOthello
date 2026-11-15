@@ -59,7 +59,7 @@ public readonly struct BitBoard
                 int bit = y * 8 + x;
                 if (((Player >> bit) & 1) == 1) tiles[y, x] = me;       // tiles[行, 列] の順
                 else if (((Opponent >> bit) & 1) == 1) tiles[y, x] = opp;
-                else tiles[x, y] = 0;
+                else tiles[y, x] = 0;
             }
         }
     }
