@@ -9,6 +9,8 @@ using System.Diagnostics;
 /// 例: --endgame-bench --wthor ../external/wthor/WTH_2020.wtb --empties 16,18,20 --positions 30
 ///     --level 15  (標準。残り20マスから完全読みに入るレベル)
 ///     --force-solve  (レベルに関係なく完全読みする。完全読みに入る上限を見直すときに使う)
+///     --transcript f5d6c3...  (棋譜を並べ直し、各局面で手を選ぶ時間を測る。ベンチで遅かった手を探すときに使う)
+///     --only-move 41  (--transcript のうち、その手目の局面だけを測る)
 /// </summary>
 public static class EndgameBench
 {
@@ -30,6 +32,12 @@ public static class EndgameBench
         OthelloDebugLog.SuppressOutput = true;
         try
         {
+            string? transcript = ValueOf(args, "--transcript");
+            if (transcript != null)
+            {
+                MeasureTranscript(ai, transcript, level, forceSolve, int.Parse(ValueOf(args, "--only-move") ?? "0"));
+                return;
+            }
             foreach (int empties in emptiesList)
                 Measure(ai, wthorPath, empties, positions, level, forceSolve);
         }
@@ -70,6 +78,43 @@ public static class EndgameBench
         Console.WriteLine($"残り{empties}マス: {boards.Count}局面  平均 {total / Math.Max(1, times.Count):F0}ms  中央値 {median:F0}ms  "
                         + $"最大 {(times.Count == 0 ? 0 : times[^1]):F0}ms  10秒超え {times.Count(t => t > AiLevel.TargetThinkTime.TotalMilliseconds)}局面  "
                         + $"局面数 {totalNodes / Math.Max(1, boards.Count):N0}/局面  速さ {totalNodes / Math.Max(1, total) / 1000:F2}M局面/秒");
+    }
+
+    /// <summary>棋譜(f5d6形式、パスは書かない)を初期局面から並べ直し、各局面で手を選ぶ時間を書く</summary>
+    private static void MeasureTranscript(OthelloAI ai, string transcript, int level, bool forceSolve, int onlyMove)
+    {
+        // 初期局面(黒の番): d5・e4 が黒、d4・e5 が白
+        var board = new BitBoard((1UL << 28) | (1UL << 35), (1UL << 27) | (1UL << 36));
+        bool blackToMove = true;
+        for (int i = 0; i + 1 < transcript.Length; i += 2)
+        {
+            if (board.GetMoves() == 0)
+            {
+                board = new BitBoard(board.Opponent, board.Player); // パス
+                blackToMove = !blackToMove;
+            }
+            int col = char.ToLowerInvariant(transcript[i]) - 'a';
+            int row = transcript[i + 1] - '1';
+            int move = row * 8 + col;
+            if ((board.GetMoves() & (1UL << move)) == 0)
+                throw new ArgumentException($"{i / 2 + 1}手目の {transcript.Substring(i, 2)} は打てません。");
+
+            if (onlyMove != 0 && i / 2 + 1 != onlyMove)
+            {
+                board = board.DoMove(move);
+                blackToMove = !blackToMove;
+                continue;
+            }
+            var stopwatch = Stopwatch.StartNew();
+            int chosen = ai.ChooseMove(board, level, forceSolve);
+            stopwatch.Stop();
+            (int r, int c) = BitBoard.BitToCoord(chosen);
+            Console.WriteLine($"{i / 2 + 1,2}手目 {(blackToMove ? "黒" : "白")} 残り{board.EmptyCount,2}マス  {stopwatch.Elapsed.TotalMilliseconds,8:F0}ms  "
+                            + $"局面数 {ai.LastNodeCount,12:N0}  選んだ手 {(char)('a' + c - 1)}{r}  棋譜の手 {transcript.Substring(i, 2)}");
+
+            board = board.DoMove(move);
+            blackToMove = !blackToMove;
+        }
     }
 
     private static string? ValueOf(string[] args, string name)
