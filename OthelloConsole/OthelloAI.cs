@@ -14,8 +14,14 @@ public class OthelloAI
         _evaluator = evaluator;
     }
 
-    /// <summary>中盤の探索で LMR(後ろの手を浅く読む近似)を使うか。LMR あり・なしを比べるため(--bench --no-lmr)に切り替えられる</summary>
-    public bool UseLmr { get; init; } = true;
+    /// <summary>
+    /// 中盤の探索で LMR(後ろの手を浅く読む近似)を使うかの上書き。null ならレベルどおり(AiLevel.UsesLmr)。
+    /// LMR あり・なしを比べるため(--lmr / --no-lmr)に使う
+    /// </summary>
+    public bool? LmrOverride { get; init; }
+
+    /// <summary>いま選んでいる手で LMR を使うか(ChooseMove でレベルから決める)</summary>
+    private bool _useLmr;
 
     private int _maxDepth;
     private int _recursionsCount;
@@ -69,8 +75,9 @@ public class OthelloAI
         int level = AiLevel.Clamp(requestedLevel);
         _maxDepth = AiLevel.MidgameDepth(level);
         _perfectSolveEmpties = AiLevel.PerfectSolveEmpties(level);
+        _useLmr = LmrOverride ?? AiLevel.UsesLmr(level);
 
-        InfoLog($"AI思考開始 (レベル{level}: 中盤{_maxDepth}手読み・残り{_perfectSolveEmpties}マスから完全読み  残りマス={board.EmptyCount})");
+        InfoLog($"AI思考開始 (レベル{level}: 中盤{_maxDepth}手読み・残り{_perfectSolveEmpties}マスから完全読み・LMR{(_useLmr ? "あり" : "なし")}  残りマス={board.EmptyCount})");
         _tt.Clear();
 
         // Killer Move テーブル初期化
@@ -268,7 +275,7 @@ public class OthelloAI
                 // depth-2 で Null Window 探索し、alpha を超えた場合のみ full depth で再探索する。
                 // 条件: depth>=3 かつ insertPos（TT/Killer枠）より後の手
                 int dummy = -1;
-                bool canLMR = UseLmr && depth >= 3 && i >= Math.Max(2, insertPos);
+                bool canLMR = _useLmr && depth >= 3 && i >= Math.Max(2, insertPos);
                 int lmrDepth = canLMR ? depth - 2 : depth - 1;
 
                 score = -NegaScout(next, lmrDepth, -alpha - 1, -alpha, ref dummy);

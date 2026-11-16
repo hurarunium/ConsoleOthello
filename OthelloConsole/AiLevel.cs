@@ -24,11 +24,28 @@ public static class AiLevel
     /// </summary>
     public static readonly TimeSpan TargetThinkTime = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// 中盤の探索で LMR(後ろの手を浅く読む近似)を使い始めるレベル。
+    /// LMR を使うと見落としが出て弱くなる(レベル5対lv.5で、LMR ありは33.0%、なしは45.1%、各400局)。
+    /// 一方、LMR がないと深いレベルで1手10秒に収まらない(レベル14は最大31秒)。
+    /// LMR なしでも1手が十分短いレベル11まで(1局で最大0.8秒)は使わず、それより上だけ使う
+    /// </summary>
+    public const int LmrMinLevel = 12;
+
     /// <summary>選べるレベルの一覧(1〜15)</summary>
     public static IReadOnlyList<int> All { get; } = Enumerable.Range(Min, Max - Min + 1).ToList();
 
     /// <summary>中盤で読む手数</summary>
     public static int MidgameDepth(int level) => Clamp(level);
+
+    /// <summary>そのレベルで、中盤の探索に LMR を使うか</summary>
+    public static bool UsesLmr(int level) => Clamp(level) >= LmrMinLevel;
+
+    /// <summary>
+    /// 開発用のコマンドの引数から、LMR の決まりの上書きを読む(--lmr で必ず使う、--no-lmr で使わない、どちらもなければ null = レベルどおり)
+    /// </summary>
+    public static bool? LmrOverrideFromArgs(string[] args)
+        => args.Contains("--no-lmr") ? false : args.Contains("--lmr") ? true : null;
 
     /// <summary>完全読みに入る残りマスの数</summary>
     public static int PerfectSolveEmpties(int level) => Math.Min(2 * Clamp(level), PerfectSolveEmptiesCap);

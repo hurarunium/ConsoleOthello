@@ -6,8 +6,8 @@ using static OthelloSystem;
 /// 評価関数や探索を変えたときに、探索の不具合を入れていないかを確かめるために使う。
 ///
 /// - 終盤: 完全読みは近似を使わないので、食い違いが1つでもあれば不具合。
-/// - 中盤: 同じ評価関数・同じ深さの単純なαβ探索と比べる。OthelloAI は LMR(後ろの手を浅く読む近似)を
-///   使うので、中盤の食い違いは近似によるものも含む。
+/// - 中盤: 同じ評価関数・同じ深さの単純なαβ探索と比べる。LMR(後ろの手を浅く読む近似)を
+///   使わずに動かすので、食い違いが1つでもあれば不具合。
 ///
 /// 例: --search-check --positions 200
 ///     --search-check --weights x.bin     (評価ファイルを指定する)
@@ -25,7 +25,8 @@ public static class SearchCheck
 
         PatternEvaluator evaluatorFile = EvaluatorFile.LoadFromArgs(args, out string description);
         Console.WriteLine($"評価関数: {description}");
-        Func<OthelloAI> createAi = () => new OthelloAI(evaluatorFile);
+        // LMR は近似なので、使わずに動かす(使うと、正しい探索でも食い違いが出る)
+        Func<OthelloAI> createAi = () => new OthelloAI(evaluatorFile) { LmrOverride = false };
 
         OthelloDebugLog.SuppressOutput = true;
         try
@@ -95,7 +96,8 @@ public static class SearchCheck
             if (chosenValue != bestValue) mismatches++;
         }
 
-        Console.WriteLine($"[参考] 中盤(レベル{level}、深さ{depth}): {count}局面中 {mismatches}局面で最善でない手(LMRの近似による食い違いを含む)");
+        string result = mismatches == 0 ? "OK" : "不具合あり";
+        Console.WriteLine($"[{result}] 中盤(レベル{level}、深さ{depth}、LMRなし): {count}局面中 {mismatches}局面で最善でない手");
     }
 
     /// <summary>OthelloAI に手を選ばせ、ビット位置で返す。毎回新しく作り、置換表などの持ち越しをなくす</summary>
