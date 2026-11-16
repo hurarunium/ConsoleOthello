@@ -223,4 +223,68 @@ public readonly struct BitBoard
     /// 1ベース座標(行, 列)をビット位置に変換する。
     /// </summary>
     public static int CoordToBit(int row, int col) => (row - 1) * 8 + (col - 1);
+
+    // ---- 確定石(これから先、どう打っても裏返らない石) ----
+
+    private const ulong ColumnA = 0x0101_0101_0101_0101UL;
+    private const ulong ColumnH = 0x8080_8080_8080_8080UL;
+    private const ulong Row1 = 0x0000_0000_0000_00FFUL;
+    private const ulong Row8 = 0xFF00_0000_0000_0000UL;
+
+    // 横・縦・斜め2方向の、すべての列(線)のマス。線が埋まっていれば、その線の向きでは裏返らない
+    private static readonly ulong[] HorizontalLines = BuildLines(0, 1);
+    private static readonly ulong[] VerticalLines = BuildLines(1, 0);
+    private static readonly ulong[] DiagonalLines = BuildLines(1, 1);      // 右下へ(+9)
+    private static readonly ulong[] AntiDiagonalLines = BuildLines(1, -1); // 左下へ(+7)
+
+    private static ulong[] BuildLines(int dRow, int dCol)
+    {
+        var lines = new List<ulong>();
+        for (int start = 0; start < 64; start++)
+        {
+            int row = start / 8, col = start % 8;
+            // 線の始まり(1つ前が盤の外)のマスからだけ作る
+            int prevRow = row - dRow, prevCol = col - dCol;
+            if (prevRow >= 0 && prevRow < 8 && prevCol >= 0 && prevCol < 8) continue;
+            ulong line = 0;
+            for (int r = row, c = col; r >= 0 && r < 8 && c >= 0 && c < 8; r += dRow, c += dCol)
+                line |= 1UL << (r * 8 + c);
+            lines.Add(line);
+        }
+        return lines.ToArray();
+    }
+
+    private static ulong FullLines(ulong filled, ulong[] lines)
+    {
+        ulong full = 0;
+        foreach (ulong line in lines)
+            if ((filled & line) == line) full |= line;
+        return full;
+    }
+
+    /// <summary>
+    /// owner の石のうち、確定石とわかるもの(すべてとは限らないが、返した石は必ず確定石)。
+    /// 石は、横・縦・斜め2方向のそれぞれで「線が埋まっている」か「どちらかの隣が盤の外か owner の確定石」なら、その向きでは裏返らない。
+    /// 4方向とも裏返らない石を、増えなくなるまで足していく(最初は角から決まる)
+    /// </summary>
+    public static ulong StableDiscs(ulong owner, ulong filled)
+    {
+        ulong fullH = FullLines(filled, HorizontalLines);
+        ulong fullV = FullLines(filled, VerticalLines);
+        ulong fullD9 = FullLines(filled, DiagonalLines);
+        ulong fullD7 = FullLines(filled, AntiDiagonalLines);
+
+        ulong stable = 0;
+        while (true)
+        {
+            // 各向きで、隣(左右・上下・斜め)が盤の外か確定石か
+            ulong okH = fullH | ColumnA | ColumnH | ((stable << 1) & ~ColumnA) | ((stable >> 1) & ~ColumnH);
+            ulong okV = fullV | Row1 | Row8 | (stable << 8) | (stable >> 8);
+            ulong okD9 = fullD9 | Row1 | Row8 | ColumnA | ColumnH | ((stable << 9) & ~ColumnA) | ((stable >> 9) & ~ColumnH);
+            ulong okD7 = fullD7 | Row1 | Row8 | ColumnA | ColumnH | ((stable << 7) & ~ColumnH) | ((stable >> 7) & ~ColumnA);
+            ulong next = owner & okH & okV & okD9 & okD7;
+            if (next == stable) return stable;
+            stable = next;
+        }
+    }
 }

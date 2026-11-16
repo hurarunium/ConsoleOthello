@@ -519,6 +519,14 @@ public class OthelloAI
 
         if (empties <= SmallSolveEmpties) return SolveSmall(board, alpha, beta, empties);
 
+        // 確定石で値の上限を絞る(勝ちを探しているときだけ)
+        if (alpha > 0)
+        {
+            int upper = StabilityUpperBound(board, empties);
+            if (upper <= alpha) return upper;
+            if (upper < beta) beta = upper;
+        }
+
         // 100万局面ごとに進み具合を書く
         if (_recursionsCount - _lastProgressLogNodes >= 1_000_000)
         {
@@ -735,6 +743,13 @@ public class OthelloAI
         ulong empty = ~(board.Player | board.Opponent);
         if (empties == 1) return SolveLastMove(board, empty);
 
+        if (alpha > 0 && empties >= SmallStabilityEmpties)
+        {
+            int upper = StabilityUpperBound(board, empties);
+            if (upper <= alpha) return upper;
+            if (upper < beta) beta = upper;
+        }
+
         // 空きマスが奇数個の区画を先にする
         ulong odd = 0;
         if ((BitOperations.PopCount(empty & QuadrantTopLeft) & 1) != 0) odd |= QuadrantTopLeft;
@@ -814,6 +829,26 @@ public class OthelloAI
     /// 石数の差は64まで、終局の空きマスは今の空きマスまで(今が終局なら今の空きマスと同じ)
     /// </summary>
     private static int FinalValueBound(int empties) => 64 * FinalValueScale + empties;
+
+    /// <summary>
+    /// 小さな探索(SolveSmall)で、確定石の上限を使う空きマスの下限。これより少ない局面では、確定石を数える手間のほうが大きい。
+    /// 自己対局の残り20マス40局面で、使わない・2・4を比べ、4がいちばん速かった
+    /// </summary>
+    private const int SmallStabilityEmpties = 4;
+
+    /// <summary>
+    /// 確定石から見た、手番の終局の値の上限。相手の確定石が s 個なら、相手の石は終局で s 個以上残るので、
+    /// 石数の差(空きマスは勝った側に数える)は 64 − 2s 以下になる。
+    /// 勝ちなら終局の空きマスは今の空きマス以下なので、上限は (64 − 2s) × 64 + 空きマス。
+    /// 一方的な局面で、同じ値の手が並んで窓に余裕がなくなっても、「これより上はない」とすぐにわかり、読む局面が大きく減る
+    /// </summary>
+    private static int StabilityUpperBound(BitBoard board, int empties)
+    {
+        int stable = BitOperations.PopCount(BitBoard.StableDiscs(board.Opponent, board.Player | board.Opponent));
+        int maxDiscDiff = 64 - 2 * stable;
+        // 差が0以下なら勝てないので、空きマスの分は足さない(負けの値は 差 × 64 − 空きマス ≤ 差 × 64)
+        return maxDiscDiff > 0 ? maxDiscDiff * FinalValueScale + empties : maxDiscDiff * FinalValueScale;
+    }
 
     /// <summary>終局の値を、石数の差(空きマスを勝った側に足したもの)と終局の空きマスに分ける(ログに出すため)</summary>
     internal static (int discDiff, int emptiesLeft) SplitFinalValue(int value)
