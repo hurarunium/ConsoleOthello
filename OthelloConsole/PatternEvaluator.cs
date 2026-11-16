@@ -77,6 +77,14 @@ public sealed class PatternEvaluator
     public static int InstanceCount => s_instances.Length;
     public static int TableSize(int pattern) => s_tableSizes[pattern];
     public static int CellCount(int pattern) => s_basePatterns[pattern].Length;
+    /// <summary>パターンの元の形(マスの番号の並び)。並べ替え用の評価ファイルで、形が今と同じかを確かめるために使う</summary>
+    public static ReadOnlySpan<int> PatternCells(int pattern) => s_basePatterns[pattern];
+    /// <summary>置き場所 instance(EvalState の番号の位置)のパターンの種類</summary>
+    public static int InstancePattern(int instance) => s_instances[instance].pattern;
+    /// <summary>パターンの種類の、表の番号 → 代表の番号</summary>
+    public static int CanonicalIndex(int pattern, int index) => s_canonical[pattern][index];
+    /// <summary>パターンの種類の、学習の重み(1段階ぶんをつなげたもの)の上の先頭位置</summary>
+    public static int FeatureOffset(int pattern) => s_featureOffsets[pattern];
 
     static PatternEvaluator()
     {
@@ -472,6 +480,8 @@ public sealed class PatternEvaluatorMeta
     public int Stages { get; set; } = PatternEvaluator.StageCount;
     public int Scale { get; set; } = PatternEvaluator.Scale;
     public List<string> Data { get; set; } = new();
+    /// <summary>並べ替え用の評価ファイルで使ったパターン(1始まり)。評価関数のファイルでは null</summary>
+    public List<int>? Patterns { get; set; }
     public int Epochs { get; set; }
     /// <summary>検証用データでの誤差(石数の二乗平均平方根)。学習していないときは null</summary>
     public double? ValidationError { get; set; }

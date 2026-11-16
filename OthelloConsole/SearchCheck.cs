@@ -25,8 +25,11 @@ public static class SearchCheck
 
         PatternEvaluator evaluatorFile = EvaluatorFile.LoadFromArgs(args, out string description);
         Console.WriteLine($"評価関数: {description}");
-        // MPC は近似なので、使わずに動かす(使うと、正しい探索でも食い違いが出る)
-        Func<OthelloAI> createAi = () => new OthelloAI(evaluatorFile) { MpcOverride = false };
+        // MPC は近似なので、使わずに動かす(使うと、正しい探索でも食い違いが出る)。並べ替えの指定は引数どおり
+        string[] withoutMpc = args.Where(a => a != "--mpc").Append("--no-mpc").ToArray();
+        OthelloAI.CreateFromArgs(evaluatorFile, withoutMpc, out string orderingDescription);
+        Console.WriteLine($"並べ替え用の評価: {orderingDescription}");
+        Func<OthelloAI> createAi = () => OthelloAI.CreateFromArgs(evaluatorFile, withoutMpc, out _);
 
         OthelloDebugLog.SuppressOutput = true;
         try

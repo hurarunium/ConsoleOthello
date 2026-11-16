@@ -42,7 +42,7 @@ public class Othello
 
     private StringBuilder builder = new();
     private MainGameData _gameData = new MainGameData();
-    public OthelloAI _ai = new OthelloAI(EvaluatorFile.Load(path: null, out _));
+    public OthelloAI _ai = new OthelloAI(EvaluatorFile.Load(path: null, out _)) { Ordering = OrderingEvaluator.LoadFromArgs([], out _) };
     private int _player1FrameCounter = 2;
     private int _player2FrameCounter = 2;
     private bool _isDebug = false;

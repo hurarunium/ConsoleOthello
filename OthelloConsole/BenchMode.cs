@@ -127,11 +127,8 @@ public static class BenchMode
         double? mpcSelectivityOverride = AiLevel.MpcSelectivityFromArgs(args);
         bool useMpc = mpcOverride ?? AiLevel.UsesMpc(options.OurLevel);
         double mpcSelectivity = mpcSelectivityOverride ?? AiLevel.MpcSelectivity(options.OurLevel);
-        var ai = new OthelloAI(EvaluatorFile.LoadFromArgs(args, out string weightsSource))
-        {
-            MpcOverride = mpcOverride,
-            MpcSelectivityOverride = mpcSelectivityOverride,
-        };
+        OthelloAI ai = OthelloAI.CreateFromArgs(EvaluatorFile.LoadFromArgs(args, out string weightsSource), args, out string orderingDescription);
+        Console.WriteLine($"並べ替え用の評価: {orderingDescription}");
 
         DateTimeOffset startedAt = DateTimeOffset.Now;
         Directory.CreateDirectory(options.OutputDirectory);

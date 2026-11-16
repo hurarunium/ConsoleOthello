@@ -263,46 +263,54 @@ public class OthelloAI
             }
         }
 
-        // Move Ordering 2: Killer Move（TT手の直後に配置）
-        int killer1 = depth < _killerMoves.GetLength(0) ? _killerMoves[depth, 0] : -1;
-        int killer2 = depth < _killerMoves.GetLength(0) ? _killerMoves[depth, 1] : -1;
-        if (killer1 >= 0 && killer1 != ttBestMove)
+        if (Ordering != null && depth >= MidgameOrderingDepth)
         {
-            for (int k = insertPos; k < moveCount; k++)
+            // Move Ordering 2': 深い節点では、置換表の手の後ろを「並べ替え用の軽い評価 + 相手の打てる手の数」の小さい順に並べる
+            OrderByLightEvaluation(board, state, moves, insertPos);
+        }
+        else
+        {
+            // Move Ordering 2: Killer Move（TT手の直後に配置）
+            int killer1 = depth < _killerMoves.GetLength(0) ? _killerMoves[depth, 0] : -1;
+            int killer2 = depth < _killerMoves.GetLength(0) ? _killerMoves[depth, 1] : -1;
+            if (killer1 >= 0 && killer1 != ttBestMove)
             {
-                if (moves[k] == killer1)
+                for (int k = insertPos; k < moveCount; k++)
                 {
-                    if (k != insertPos) { moves[k] = moves[insertPos]; moves[insertPos] = killer1; }
-                    insertPos++;
-                    break;
+                    if (moves[k] == killer1)
+                    {
+                        if (k != insertPos) { moves[k] = moves[insertPos]; moves[insertPos] = killer1; }
+                        insertPos++;
+                        break;
+                    }
                 }
             }
-        }
-        if (killer2 >= 0 && killer2 != ttBestMove && killer2 != killer1)
-        {
-            for (int k = insertPos; k < moveCount; k++)
+            if (killer2 >= 0 && killer2 != ttBestMove && killer2 != killer1)
             {
-                if (moves[k] == killer2)
+                for (int k = insertPos; k < moveCount; k++)
                 {
-                    if (k != insertPos) { moves[k] = moves[insertPos]; moves[insertPos] = killer2; }
-                    insertPos++;
-                    break;
+                    if (moves[k] == killer2)
+                    {
+                        if (k != insertPos) { moves[k] = moves[insertPos]; moves[insertPos] = killer2; }
+                        insertPos++;
+                        break;
+                    }
                 }
             }
-        }
 
-        // Move Ordering 3: 残り手を History スコア降順で挿入ソート（手数が少ないためO(n²)で十分）
-        for (int k = insertPos + 1; k < moveCount; k++)
-        {
-            int key = moves[k];
-            int keyScore = _historyTable[key];
-            int j = k - 1;
-            while (j >= insertPos && _historyTable[moves[j]] < keyScore)
+            // Move Ordering 3: 残り手を History スコア降順で挿入ソート（手数が少ないためO(n²)で十分）
+            for (int k = insertPos + 1; k < moveCount; k++)
             {
-                moves[j + 1] = moves[j];
-                j--;
+                int key = moves[k];
+                int keyScore = _historyTable[key];
+                int j = k - 1;
+                while (j >= insertPos && _historyTable[moves[j]] < keyScore)
+                {
+                    moves[j + 1] = moves[j];
+                    j--;
+                }
+                moves[j + 1] = key;
             }
-            moves[j + 1] = key;
         }
 
         int localBestMove = moves[0];
@@ -422,6 +430,21 @@ public class OthelloAI
     /// <summary>空きマスがこの数以上の局面では、評価関数も使って手を並べる(未満は相手の打てる手の数だけで並べる)</summary>
     private const int EvalOrderingEmpties = 12;
 
+    /// <summary>
+    /// 中盤の手の並べ替え用の軽い評価(なければ、中盤は置換表・Killer・History だけで並べる)。番号は探索で持ち歩いている EvalState を使う。
+    /// 完全読みの並べ替えには使わない(試すと、64か所の評価で並べるより読む局面が11〜24%増えた)
+    /// </summary>
+    public OrderingEvaluator? Ordering { get; init; }
+    /// <summary>
+    /// 中盤で、並べ替え用の軽い評価で手を並べ始める深さ(--ord-mid-depth。これより浅い節点は Killer と History で並べる)。
+    /// レベル12の中盤で2〜6を比べ、4がいちばん速かった(浅くすると局面は減るが、並べる手間のほうが大きい)
+    /// </summary>
+    public int MidgameOrderingDepth { get; init; } = DefaultMidgameOrderingDepth;
+    /// <summary>中盤の並べ替えで、相手の打てる手1つあたりに足す値(--ord-mobility。64・128・256を比べて64にした)</summary>
+    public int MidgameOrderingMobilityWeight { get; init; } = DefaultMidgameOrderingMobilityWeight;
+
+    private const int DefaultMidgameOrderingDepth = 4;
+    private const int DefaultMidgameOrderingMobilityWeight = 64;
 
     // 盤面を4つに分けたマスク(偶数理論: 空きマスが奇数個の区画から先に打つ)
     private const ulong QuadrantTopLeft = 0x0000_0000_0F0F_0F0FUL;
@@ -621,6 +644,36 @@ public class OthelloAI
     /// <summary>空きマスがこの数以上の局面では、2手読み(子の局面から1手読み)の値で手を並べる</summary>
     private const int ShallowSearchOrderingEmpties = 16;
 
+    /// <summary>
+    /// 中盤の並べ替え: moves[from..] を、子の局面の「並べ替え用の軽い評価(相手から見た値) + 相手の打てる手の数 × 重み」の小さい順に並べる
+    /// </summary>
+    private void OrderByLightEvaluation(BitBoard board, in EvalState state, Span<int> moves, int from)
+    {
+        Span<int> keys = stackalloc int[64];
+        int childEmpties = board.EmptyCount - 1;
+        for (int k = from; k < moves.Length; k++)
+        {
+            int move = moves[k];
+            ulong flipped = board.GetFlipped(move);
+            BitBoard next = DoMove(board, move, flipped);
+            PatternEvaluator.Play(state, move, flipped, out EvalState nextState);
+            ulong opponentMoves = next.GetMoves();
+            int key = Ordering!.Evaluate(nextState, childEmpties)
+                    + (BitOperations.PopCount(opponentMoves) + BitOperations.PopCount(opponentMoves & CornerMask)) * MidgameOrderingMobilityWeight;
+
+            // 挿入ソート(小さい順)
+            int j = k - 1;
+            while (j >= from && keys[j] > key)
+            {
+                keys[j + 1] = keys[j];
+                moves[j + 1] = moves[j];
+                j--;
+            }
+            keys[j + 1] = key;
+            moves[j + 1] = move;
+        }
+    }
+
     /// <summary>手の並べ替えに使う浅い探索(評価のαβ。置換表は使わない)。値は手番から見た評価値</summary>
     private int OrderingSearch(BitBoard board, in EvalState state, int depth, int alpha, int beta)
     {
@@ -735,6 +788,30 @@ public class OthelloAI
         if (p > o) return WinScore + (p - o);
         if (p < o) return -WinScore - (o - p);
         return 0;
+    }
+
+    /// <summary>
+    /// 開発用のコマンド(ベンチ・測定・確認)の引数から AI を作る。中盤の並べ替え用の評価(--ordering / --no-ordering)と
+    /// その調整(--ord-mid-depth・--ord-mobility)、MPC の上書き(--mpc / --no-mpc / --mpc-t)を読む
+    /// </summary>
+    internal static OthelloAI CreateFromArgs(PatternEvaluator evaluator, string[] args, out string orderingDescription)
+    {
+        int IntArg(string name, int fallback)
+        {
+            int index = Array.IndexOf(args, name);
+            return index >= 0 && index + 1 < args.Length ? int.Parse(args[index + 1]) : fallback;
+        }
+        OrderingEvaluator? ordering = OrderingEvaluator.LoadFromArgs(args, out orderingDescription);
+        var ai = new OthelloAI(evaluator)
+        {
+            Ordering = ordering,
+            MidgameOrderingDepth = IntArg("--ord-mid-depth", DefaultMidgameOrderingDepth),
+            MidgameOrderingMobilityWeight = IntArg("--ord-mobility", DefaultMidgameOrderingMobilityWeight),
+            MpcOverride = AiLevel.MpcOverrideFromArgs(args),
+            MpcSelectivityOverride = AiLevel.MpcSelectivityFromArgs(args),
+        };
+        if (ordering != null) orderingDescription += $"、深さ{ai.MidgameOrderingDepth}以上・相手の手1つ {ai.MidgameOrderingMobilityWeight}";
+        return ai;
     }
 
     /// <summary>

@@ -71,7 +71,8 @@ public partial class MainWindowViewModel : ViewModelBase
 
     public MainWindowViewModel()
     {
-        _ai = new OthelloAI(EvaluatorFile.Load(path: null, out _weightsSource));
+        // 中盤の並べ替え用の評価は、weights/move_ordering.bin があれば使う
+        _ai = new OthelloAI(EvaluatorFile.Load(path: null, out _weightsSource)) { Ordering = OrderingEvaluator.LoadFromArgs([], out _) };
 
         var record = BattleRecord.Load(RecordsPath);
         PlayerWins   = record.Wins;

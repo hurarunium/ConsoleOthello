@@ -33,7 +33,8 @@ public static class EndgameBench
             ? $"棋譜: {wthorPath}  すべて完全読み"
             : $"棋譜: {wthorPath}  レベル{level}(残り{AiLevel.PerfectSolveEmpties(level)}マスから完全読み)、MPC{(useMpc ? $"あり({mpcSelectivity ?? AiLevel.MpcSelectivity(level):F2})" : "なし")}");
 
-        var ai = new OthelloAI(evaluator) { MpcOverride = mpcOverride, MpcSelectivityOverride = mpcSelectivity };
+        OthelloAI ai = OthelloAI.CreateFromArgs(evaluator, args, out string orderingDescription);
+        Console.WriteLine($"並べ替え用の評価: {orderingDescription}");
         OthelloDebugLog.SuppressOutput = true;
         try
         {

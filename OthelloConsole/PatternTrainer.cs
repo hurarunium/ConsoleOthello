@@ -14,6 +14,8 @@ using System.Diagnostics;
 ///                     --wthor ../external/wthor --records Data/collected/game_records.jsonl
 ///                     --epochs 30 --out weights/pattern_eval.bin
 ///     --limit 2000000 で、Egaroucidのデータを先頭から指定の数だけ使う(試しに学習するとき)
+///     --patterns 9,10,13,14 で、16種類のうち指定したパターン(1始まり)だけを学習し、手の並べ替え用の評価ファイル
+///     (OrderingEvaluator、標準は weights/move_ordering.bin)を書く
 /// </summary>
 public static class PatternTrainer
 {
@@ -27,7 +29,10 @@ public static class PatternTrainer
         string? egaroucidPath = ValueOf(args, "--egaroucid");
         string? wthorPath = ValueOf(args, "--wthor");
         string? recordsPath = ValueOf(args, "--records");
-        string outPath = ValueOf(args, "--out") ?? EvaluatorFile.DefaultOutputPath;
+        string? patternsText = ValueOf(args, "--patterns");
+        int[]? orderingPatterns = patternsText == null ? null
+            : OrderingEvaluator.ValidatePatterns(patternsText.Split(',').Select(t => int.Parse(t) - 1));
+        string outPath = ValueOf(args, "--out") ?? (orderingPatterns != null ? OrderingEvaluator.DefaultOutputPath : EvaluatorFile.DefaultOutputPath);
         int epochs = int.Parse(ValueOf(args, "--epochs") ?? "30");
         long limit = long.Parse(ValueOf(args, "--limit") ?? "0");
         // 1局面の誤差を64か所で分け合うので、1か所あたりの歩幅は小さくする(64 × 学習率 が1より十分小さい値)
@@ -73,6 +78,12 @@ public static class PatternTrainer
         training.Clear();
         training.TrimExcess();
 
+        // 学習に使う置き場所(並べ替え用なら、指定したパターンの置き場所だけ)
+        int[] lanes = Enumerable.Range(0, PatternEvaluator.InstanceCount)
+            .Where(i => orderingPatterns == null || orderingPatterns.Contains(PatternEvaluator.InstancePattern(i))).ToArray();
+        if (orderingPatterns != null)
+            Console.WriteLine($"並べ替え用: パターン {string.Join(",", orderingPatterns.Select(p => p + 1))}(置き場所 {lanes.Length}か所)");
+
         int features = PatternEvaluator.FeatureCountPerStage;
         var weights = new float[PatternEvaluator.StageCount][];
         var bias = new float[PatternEvaluator.StageCount];
@@ -87,19 +98,21 @@ public static class PatternTrainer
             double[] trainSquaredError = new double[PatternEvaluator.StageCount];
             int currentEpoch = epoch;
             Parallel.For(0, PatternEvaluator.StageCount, s =>
-                trainSquaredError[s] = RunEpoch(trainingByStage[s], weights[s], ref bias[s], epochRate, seed: currentEpoch * 100 + s));
+                trainSquaredError[s] = RunEpoch(trainingByStage[s], lanes, weights[s], ref bias[s], epochRate, seed: currentEpoch * 100 + s));
 
             long trainCount = trainingByStage.Sum(l => (long)l.Count);
             double trainError = Math.Sqrt(trainSquaredError.Sum() / Math.Max(1, trainCount));
-            lastValidationError = ValidationError(validationByStage, weights, bias);
+            lastValidationError = ValidationError(validationByStage, lanes, weights, bias);
             Console.WriteLine($"[{epoch,3}/{epochs}] 学習用の誤差 {trainError:F3}石  検証用の誤差 {lastValidationError:F3}石  ({stopwatch.Elapsed.TotalSeconds:F0}秒)");
         }
 
-        PatternEvaluator evaluator = PatternEvaluator.FromWeights(weights, bias);
-        evaluator.Save(outPath);
+        if (orderingPatterns != null) OrderingEvaluator.FromWeights(orderingPatterns, weights, bias).Save(outPath);
+        else PatternEvaluator.FromWeights(weights, bias).Save(outPath);
         new PatternEvaluatorMeta
         {
             CreatedAt = DateTimeOffset.Now.ToString("o"),
+            Format = orderingPatterns != null ? "OTMO v1" : "OTPE v1",
+            Patterns = orderingPatterns?.Select(p => p + 1).ToList(),
             Data = dataNames,
             Epochs = epochs,
             ValidationError = double.IsNaN(lastValidationError) ? null : Math.Round(lastValidationError, 3),
@@ -108,7 +121,7 @@ public static class PatternTrainer
     }
 
     /// <summary>1段階ぶんのデータを、混ぜた順番で1周し、1局面ごとに重みを動かす。動かす前の誤差の二乗の合計を返す</summary>
-    private static double RunEpoch(List<TrainingSample> samples, float[] weights, ref float bias, float learningRate, int seed)
+    private static double RunEpoch(List<TrainingSample> samples, int[] lanes, float[] weights, ref float bias, float learningRate, int seed)
     {
         // 局面の順番を混ぜる(同じ種なら同じ順番になるので、同じ条件の学習は同じ結果になる)
         int[] order = Enumerable.Range(0, samples.Count).ToArray();
@@ -121,19 +134,19 @@ public static class PatternTrainer
             TrainingSample sample = samples[i];
             PatternEvaluator.WriteFeatureIndices(sample.Board, indices);
             float predicted = bias;
-            foreach (int index in indices) predicted += weights[index];
+            foreach (int lane in lanes) predicted += weights[indices[lane]];
             float residual = sample.Target - predicted;
             squaredError += (double)residual * residual;
 
             float step = learningRate * residual;
-            foreach (int index in indices) weights[index] += step;
+            foreach (int lane in lanes) weights[indices[lane]] += step;
             bias += step;
         }
         return squaredError;
     }
 
     /// <summary>検証用データでの誤差(石数の二乗平均平方根)。検証用データがなければ NaN</summary>
-    private static double ValidationError(List<TrainingSample>[] byStage, float[][] weights, float[] bias)
+    private static double ValidationError(List<TrainingSample>[] byStage, int[] lanes, float[][] weights, float[] bias)
     {
         double squaredError = 0;
         long count = 0;
@@ -144,7 +157,7 @@ public static class PatternTrainer
             {
                 PatternEvaluator.WriteFeatureIndices(sample.Board, indices);
                 float predicted = bias[s];
-                foreach (int index in indices) predicted += weights[s][index];
+                foreach (int lane in lanes) predicted += weights[s][indices[lane]];
                 double residual = sample.Target - predicted;
                 squaredError += residual * residual;
                 count++;
