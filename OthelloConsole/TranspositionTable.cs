@@ -23,17 +23,26 @@ public struct TTEntry
 }
 
 /// <summary>
-/// Zobristハッシュを用いた置換表。
+/// 盤面のハッシュを用いた置換表。
 /// 同一局面の再評価を防ぎ探索を大幅に高速化する。
 /// </summary>
 public class TranspositionTable
 {
-    private const int TableSizeBits = 22; // 約400万エントリ
-    private const int TableSize = 1 << TableSizeBits;
-    private const int TableMask = TableSize - 1;
+    // 約800万エントリ(1つ24バイトで約192MB)。約400万では、レベル15の中盤で1手に9,600万局面を読む局面があり、
+    // 置換表が埋まって1手が10秒近くかかった(約800万で4.4秒。約1,600万にしても縮まなかった)
+    // ブラウザ版はメモリが少ないので、小さい表を選べるようにしている(sizeBits)
+    public const int DefaultSizeBits = 23;
 
-    private readonly TTEntry[] _table = new TTEntry[TableSize];
-    private readonly ulong[,] _zobristTable; // [位置64][色2]
+    private readonly int _tableMask;
+    private readonly TTEntry[] _table;
+
+    /// <param name="sizeBits">表の件数を 2 の何乗にするか(標準 23 = 約800万件)</param>
+    public TranspositionTable(int sizeBits = DefaultSizeBits)
+    {
+        if (sizeBits < 10 || sizeBits > 26) throw new ArgumentOutOfRangeException(nameof(sizeBits), sizeBits, "置換表の大きさは 2^10〜2^26 件にしてください。");
+        _table = new TTEntry[1 << sizeBits];
+        _tableMask = (1 << sizeBits) - 1;
+    }
 
     // 統計カウンター
     public int HitCount { get; private set; }
@@ -47,45 +56,21 @@ public class TranspositionTable
         MissCount = 0;
     }
 
-    public TranspositionTable()
-    {
-        _zobristTable = new ulong[64, 2];
-        var rng = new Random(12345); // 固定シードで再現性確保
-        for (int i = 0; i < 64; i++)
-        {
-            _zobristTable[i, 0] = NextUInt64(rng);
-            _zobristTable[i, 1] = NextUInt64(rng);
-        }
-    }
-
-    private static ulong NextUInt64(Random rng)
-    {
-        byte[] buf = new byte[8];
-        rng.NextBytes(buf);
-        return BitConverter.ToUInt64(buf, 0);
-    }
-
     /// <summary>
-    /// BitBoardからZobristハッシュを計算する
+    /// BitBoardからハッシュを計算する。石を1つずつ見るZobristハッシュより速いよう、
+    /// 2つの64ビットの値を掛け算とずらしでよく混ぜる(SplitMix64 の仕上げと同じ混ぜ方)
     /// </summary>
     public ulong ComputeHash(BitBoard board)
     {
-        ulong hash = 0UL;
-        ulong player = board.Player;
-        ulong opponent = board.Opponent;
-        while (player != 0)
-        {
-            int pos = BitOperations.TrailingZeroCount(player);
-            hash ^= _zobristTable[pos, 0];
-            player &= player - 1;
-        }
-        while (opponent != 0)
-        {
-            int pos = BitOperations.TrailingZeroCount(opponent);
-            hash ^= _zobristTable[pos, 1];
-            opponent &= opponent - 1;
-        }
-        return hash;
+        ulong hash = Mix(board.Player ^ 0x9E3779B97F4A7C15UL) ^ BitOperations.RotateLeft(Mix(board.Opponent + 0xC2B2AE3D27D4EB4FUL), 32);
+        return Mix(hash);
+    }
+
+    private static ulong Mix(ulong value)
+    {
+        value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9UL;
+        value = (value ^ (value >> 27)) * 0x94D049BB133111EBUL;
+        return value ^ (value >> 31);
     }
 
     /// <summary>
@@ -93,7 +78,7 @@ public class TranspositionTable
     /// </summary>
     public bool TryGet(ulong hash, int depth, int alpha, int beta, out int score, out int bestMove)
     {
-        ref TTEntry entry = ref _table[hash & TableMask];
+        ref TTEntry entry = ref _table[hash & (ulong)_tableMask];
         score = 0;
         bestMove = entry.BestMove;
 
@@ -138,7 +123,7 @@ public class TranspositionTable
         else
             type = TTEntryType.Exact;
 
-        ref TTEntry entry = ref _table[hash & TableMask];
+        ref TTEntry entry = ref _table[hash & (ulong)_tableMask];
         // 深い探索結果を優先して上書き
         if (entry.Hash == 0 || entry.Depth <= depth)
         {
@@ -151,13 +136,14 @@ public class TranspositionTable
     }
 
     /// <summary>
-    /// ETC（Enhanced Transposition Cutoff）用：深さチェックなしで置換表エントリを取得する。
+    /// ETC（Enhanced Transposition Cutoff）用：αβの窓を見ずに置換表エントリを取得する。
     /// 子局面のカットオフ可能性を事前に検出するために使用する。
+    /// minDepth より浅い探索の値は返さない(完全読みの中で、浅い中盤の探索の評価値を、正しい値と取り違えないため)
     /// </summary>
-    public bool TryGetRaw(ulong hash, out TTEntryType type, out int score)
+    public bool TryGetRaw(ulong hash, int minDepth, out TTEntryType type, out int score)
     {
-        ref TTEntry entry = ref _table[hash & TableMask];
-        if (entry.Hash == hash)
+        ref TTEntry entry = ref _table[hash & (ulong)_tableMask];
+        if (entry.Hash == hash && entry.Depth >= minDepth)
         {
             type  = entry.Type;
             score = entry.Score;
@@ -166,16 +152,6 @@ public class TranspositionTable
         type  = default;
         score = 0;
         return false;
-    }
-
-    /// <summary>
-    /// 置換表からスコアを見ずに最善手だけを取得する（完全読み後のルート最善手取得用）
-    /// </summary>
-    public bool TryGetBestMoveOnly(ulong hash, out int bestMove)
-    {
-        ref TTEntry entry = ref _table[hash & TableMask];
-        bestMove = entry.BestMove;
-        return entry.Hash == hash && bestMove >= 0;
     }
 
     /// <summary>

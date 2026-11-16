@@ -5,7 +5,7 @@ public struct MainGameData
     public int _turnCounter;
     public int _turnNum;
     public GameMode _gameMode;
-    public AIStrength _AIStrength;
+    public int _aiLevel; // AIのレベル(1〜15、AiLevel)
     public int _tilesSize;
 
     public MainGameData Clone()
@@ -16,7 +16,7 @@ public struct MainGameData
         clone._turnCounter = this._turnCounter;
         clone._turnNum = this._turnNum;
         clone._gameMode = this._gameMode;
-        clone._AIStrength = this._AIStrength;
+        clone._aiLevel = this._aiLevel;
         clone._tilesSize = this._tilesSize;
         return clone;
     }

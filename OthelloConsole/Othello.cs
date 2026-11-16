@@ -42,15 +42,13 @@ public class Othello
 
     private StringBuilder builder = new();
     private MainGameData _gameData = new MainGameData();
-    public OthelloAI _ai = new OthelloAI(
-        File.Exists("weights/best_weights.json")
-            ? WeightSet.Load("weights/best_weights.json")
-            : WeightSet.Default()
-    );
+    public OthelloAI _ai = new OthelloAI(EvaluatorFile.Load(path: null, out _)) { Ordering = OrderingEvaluator.LoadFromArgs([], out _) };
     private int _player1FrameCounter = 2;
     private int _player2FrameCounter = 2;
     private bool _isDebug = false;
     private List<(int x, int y)> _validMoves = new List<(int x, int y)>();
+    /// <summary>打った手の並び(パスは含めない)。終局時にf5d6形式の棋譜として残す</summary>
+    private readonly List<(int row, int col)> _playedMoves = new();
     private int _consecutivePassCount = 0; // 連続パス回数のカウント
 
     /// <summary>
@@ -70,7 +68,7 @@ public class Othello
             Console.WriteLine("[INFO] デバッグモードを有効化しました (--debug)");
         }
         Console.WriteLine("オセロへようこそ！");
-        Console.WriteLine("モード選択:AI対戦(1) 2人対戦(2) AI対AI(3) 学習モード(4)");
+        Console.WriteLine("モード選択:AI対戦(1) 2人対戦(2) AI対AI(3)");
         string input = Console.ReadLine() ?? "";
 
         switch (input)
@@ -87,12 +85,7 @@ public class Othello
                 Console.WriteLine("AI対AIモードを選択しました。");
                 _game._gameData._gameMode = GameMode.AIvsAI;
                 _game._gameData._gameTurn = GameTurn.AI;
-                _game._gameData._turnNum = 2;
                 break;
-            case "4":
-                Console.WriteLine("学習モードを選択しました。");
-                RunTrainingMode();
-                return;
             default:
                 Console.WriteLine("無効な入力です。2人対戦モードに進みます。");
                 _game._gameData._gameMode = GameMode.PlayervsPlayer;
@@ -105,12 +98,12 @@ public class Othello
             switch (sizeInput)
             {
                 case "1":
-                    Console.WriteLine("あなたは先行です。");
+                    Console.WriteLine("あなたは先行(黒●)です。");
                     break;
                 case "2":
-                    Console.WriteLine("あなたは後攻です。");
+                    Console.WriteLine("あなたは後攻(白○)です。AIが黒●で先に打ちます。");
+                    // どのモードでも黒から打ち始める。人間が後攻なら、AIが黒・人間が白
                     _game._gameData._gameTurn = GameTurn.AI;
-                    _game._gameData._turnNum = 2;
                     break;
                 default:
                     Console.WriteLine("無効な入力です。先行に進みます。");
@@ -119,26 +112,16 @@ public class Othello
         }
         if (_game._gameData._gameMode == GameMode.PlayervsAI || _game._gameData._gameMode == GameMode.AIvsAI)
         {
-            Console.WriteLine("AIの強さを選択してください:初心者(1) 普通(2) 上級者(3) プロ(4)");
+            Console.WriteLine($"AIのレベルを入力してください({AiLevel.Min}〜{AiLevel.Max}。レベルNは中盤でN手先まで読みます)");
             string aiInput = Console.ReadLine() ?? "";
-            switch (aiInput)
+            if (AiLevel.TryParse(aiInput, out int level))
             {
-                case "1":
-                    _game._gameData._AIStrength = AIStrength.Beginner;
-                    break;
-                case "2":
-                    _game._gameData._AIStrength = AIStrength.Normal;
-                    break;
-                case "3":
-                    _game._gameData._AIStrength = AIStrength.Expert;
-                    break;
-                case "4":
-                    _game._gameData._AIStrength = AIStrength.Professional;
-                    break;
-                default:
-                    Console.WriteLine("無効な入力です。普通モードに進みます。");
-                    _game._gameData._AIStrength = AIStrength.Normal;
-                    break;
+                _game._gameData._aiLevel = level;
+            }
+            else
+            {
+                Console.WriteLine($"無効な入力です。レベル{AiLevel.Default}に進みます。");
+                _game._gameData._aiLevel = AiLevel.Default;
             }
         }
 
@@ -156,47 +139,11 @@ public class Othello
     }
 
     /// <summary>
-    /// 学習モードのセットアップと実行
-    /// </summary>
-    static void RunTrainingMode()
-    {
-        Console.WriteLine("学習イテレーション数を入力してください（デフォルト: 500）:");
-        int maxIter = int.TryParse(Console.ReadLine(), out int mi) && mi > 0 ? mi : 500;
-
-        Console.WriteLine("1評価あたりのゲーム数を入力してください（デフォルト: 20）:");
-        int gamesPerEval = int.TryParse(Console.ReadLine(), out int gpe) && gpe > 0 ? gpe : 20;
-
-        Console.WriteLine("AI強度を選択してください: 初心者(1) 普通(2) 上級者(3)  [デフォルト: 普通]");
-        AIStrength trainStrength = Console.ReadLine() switch
-        {
-            "1" => AIStrength.Beginner,
-            "3" => AIStrength.Expert,
-            _ => AIStrength.Normal
-        };
-
-        Console.WriteLine("学習アルゴリズムを選択してください: ヒルクライミング(1) 焼きなまし法(2)  [デフォルト: 焼きなまし法]");
-        string algoChoice = Console.ReadLine() ?? "";
-
-        Console.Clear();
-        if (algoChoice == "1")
-        {
-            HillClimbTrainer.Run(maxIter, gamesPerEval, trainStrength);
-        }
-        else
-        {
-            Console.WriteLine("初期温度 T0 を入力してください（デフォルト: 5.0 石）:");
-            Console.WriteLine("  ※大きいほど序盤に広く探索。推奨範囲: 3〜10");
-            double t0 = double.TryParse(Console.ReadLine(), out double tv) && tv > 0 ? tv : 5.0;
-            SATrainer.Run(maxIter, gamesPerEval, trainStrength, t0);
-        }
-    }
-
-    /// <summary>
     /// ゲームを実行する中枢
     /// </summary>
     async Task RunGame()
     {
-        GameLog($"ゲーム開始 モード;{_gameData._gameMode} 盤面サイズ:{_gameData._tilesSize} AI強さ:{_gameData._AIStrength}");
+        GameLog($"ゲーム開始 モード;{_gameData._gameMode} 盤面サイズ:{_gameData._tilesSize} AIレベル:{_gameData._aiLevel}");
         GameLog("=======================================================");
         while (true)
         {
@@ -232,14 +179,13 @@ public class Othello
                 Console.WriteLine($"AIの手{x},{y}を選択しました。");
                 input = $"{x}{y}";
 
-                // デバッグOFF時は3秒待機（結果を確認できるように）
-                // デバッグON時は即座に進む（ログで詳細が見えるため）
-                if (!_isDebug) await Task.Delay(3000);
             }
             else
             {
                 Console.WriteLine("置く場所を選んでください (例: 34 は 縦3番 横4番に置く)");
-                input = Console.ReadLine() ?? "";
+                // 入力が尽きたとき(ファイルから手を流し込む確認など)は、対局をやめる。
+                // 空の入力として扱うと「無効な入力」を受け取り続けて止まらなくなるため
+                input = Console.ReadLine() ?? "end";
             }
 
             if (input == "end")
@@ -273,6 +219,7 @@ public class Othello
             }
             Console.WriteLine("=======================================================");
             PlacePiece(row, col, _gameData);
+            _playedMoves.Add((row, col));
             (_player1FrameCounter, _player2FrameCounter) = Counting(_gameData._tiles);
             _consecutivePassCount = 0; // パスをリセット
 
@@ -305,17 +252,32 @@ public class Othello
             {
                 Console.WriteLine("ゲーム終了：盤面に空きがありません。");
             }
-            Console.WriteLine($"最終結果: 敵(黒) {_player2FrameCounter}個 - プレイヤー(白) {_player1FrameCounter}個");
-            if (_player2FrameCounter > _player1FrameCounter)
-                Console.WriteLine("敵(黒)の勝ち！");
-            else if (_player1FrameCounter > _player2FrameCounter)
-                Console.WriteLine("プレイヤー(白)の勝ち！");
+            // _player1FrameCounter は黒(●)、_player2FrameCounter は白(○)の石数
+            Console.WriteLine($"最終結果: {ColorLabel(1)} {_player1FrameCounter}個 - {ColorLabel(2)} {_player2FrameCounter}個");
+            if (_player1FrameCounter > _player2FrameCounter)
+                Console.WriteLine($"{ColorLabel(1)}の勝ち！");
+            else if (_player2FrameCounter > _player1FrameCounter)
+                Console.WriteLine($"{ColorLabel(2)}の勝ち！");
             else
                 Console.WriteLine("引き分けです！");
+            if (!GameTranscript.Append(GameTranscript.Format(_playedMoves)))
+                Console.WriteLine("[注意] 棋譜(f5d6形式)を保存できませんでした。");
             Console.WriteLine("=======================================================");
             return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// 色の表示名(例: 「黒●(あなた)」「白○(AI)」)。AI対戦では、人間とAIのどちらの色かも添える
+    /// </summary>
+    string ColorLabel(int turnNum)
+    {
+        string color = turnNum == 1 ? "黒●" : "白○";
+        if (_gameData._gameMode != GameMode.PlayervsAI) return color;
+        // _gameTurn と _turnNum は一緒に切り替わるので、いまの手番から人間の色がわかる
+        int humanTurnNum = _gameData._gameTurn == GameTurn.Player ? _gameData._turnNum : 3 - _gameData._turnNum;
+        return turnNum == humanTurnNum ? $"{color}(あなた)" : $"{color}(AI)";
     }
 
     /// <summary>
@@ -375,7 +337,7 @@ public class Othello
         {
             builder.Append("現在のターン: ○\n");
         }
-        builder.Append($"プレイヤー: {_player1FrameCounter}個    敵: {_player2FrameCounter}個\n");
+        builder.Append($"{ColorLabel(1)}: {_player1FrameCounter}個    {ColorLabel(2)}: {_player2FrameCounter}個\n");
 
         builder.Append("   ");
         for (int i = 0; i < _gameData._tilesSize; i++)

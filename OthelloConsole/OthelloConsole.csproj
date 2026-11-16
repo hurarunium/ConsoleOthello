@@ -17,4 +17,12 @@
                       Condition="'$(Configuration)' == 'Debug'" />
   </ItemGroup>
 
+  <!-- 配布物(publish)にも学習した評価ファイルを入れる。exeをダブルクリックで起動したときに読めるようにする -->
+  <ItemGroup>
+    <None Include="weights/pattern_eval.bin" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="weights/pattern_eval.meta.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="weights/move_ordering.bin" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="weights/move_ordering.meta.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

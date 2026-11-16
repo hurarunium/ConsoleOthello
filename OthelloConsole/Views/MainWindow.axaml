@@ -78,15 +78,15 @@
           </StackPanel>
         </Border>
 
-        <!-- 対AI戦績（PlayervsAI のみ表示） -->
+        <!-- AIの戦績（PlayervsAI のみ表示）。保存はプレイヤー目線のまま、表示だけAI目線にする（AIの勝ち = プレイヤーの負け） -->
         <Border Background="#1e1e1e" CornerRadius="6" Padding="12"
                 IsVisible="{Binding IsPlayerVsAiMode}">
           <StackPanel Spacing="6">
-            <TextBlock Text="対AI戦績" Foreground="#888888"
+            <TextBlock Text="AIの戦績" Foreground="#888888"
                        FontSize="11" FontWeight="Bold" />
             <Grid ColumnDefinitions="*,*,*">
               <StackPanel Grid.Column="0" HorizontalAlignment="Center" Spacing="2">
-                <TextBlock Text="{Binding PlayerWins}"
+                <TextBlock Text="{Binding PlayerLosses}"
                            FontSize="22" FontWeight="Bold"
                            Foreground="#4ade80"
                            HorizontalAlignment="Center" />
@@ -94,7 +94,7 @@
                            HorizontalAlignment="Center" />
               </StackPanel>
               <StackPanel Grid.Column="1" HorizontalAlignment="Center" Spacing="2">
-                <TextBlock Text="{Binding PlayerLosses}"
+                <TextBlock Text="{Binding PlayerWins}"
                            FontSize="22" FontWeight="Bold"
                            Foreground="#f87171"
                            HorizontalAlignment="Center" />
@@ -160,17 +160,17 @@
               </StackPanel>
             </StackPanel>
 
-            <!-- AI強度（AIが絡むモードのみ） -->
+            <!-- AIのレベル（AIが絡むモードのみ） -->
             <StackPanel Spacing="4"
                         IsVisible="{Binding SelectedGameMode,
                                     Converter={StaticResource HasAiConverter}}">
-              <TextBlock Text="AI 強さ" Foreground="#cccccc" FontSize="12" />
-              <ComboBox ItemsSource="{Binding AiStrengths}"
-                        SelectedItem="{Binding SelectedAiStrength}"
+              <TextBlock Text="AI レベル" Foreground="#cccccc" FontSize="12" />
+              <ComboBox ItemsSource="{Binding AiLevels}"
+                        SelectedItem="{Binding SelectedAiLevel}"
                         HorizontalAlignment="Stretch">
                 <ComboBox.ItemTemplate>
                   <DataTemplate>
-                    <TextBlock Text="{Binding Converter={StaticResource AiStrengthConverter}}" />
+                    <TextBlock Text="{Binding Converter={StaticResource AiLevelConverter}}" />
                   </DataTemplate>
                 </ComboBox.ItemTemplate>
               </ComboBox>

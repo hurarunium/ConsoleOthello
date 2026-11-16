@@ -1,92 +1,46 @@
+using System.Runtime.CompilerServices;
 using System.Numerics;
 using static OthelloDebugLog;
-
-/// <summary>
-/// 評価関数の内訳（デバッグ表示用）
-/// </summary>
-public struct EvalDetail
-{
-    public int Position;   // 位置評価の生値
-    public int Mobility;   // 機動力の生値
-    public int Stability;  // 安定石の生値
-    public int StoneDiff;  // 駒数差
-    public int Parity;     // パリティ (+1=有利, -1=不利)
-    public int Frontier;   // フロンティアスコア（正規化）
-    public int PotMob;     // ポテンシャル機動力（正規化）
-    public int PosWeight;       // 位置評価の重み
-    public int MobWeight;       // 機動力の重み
-    public int StaWeight;       // 安定石の重み
-    public int DiffWeight;      // 駒数差の重み
-    public int ParityWeight;    // パリティの重み
-    public int FrontierWeight;  // フロンティアの重み
-    public int PotMobWeight;    // ポテンシャル機動力の重み
-
-    public int Total => Position * PosWeight + Mobility * MobWeight
-                      + Stability * StaWeight + StoneDiff * DiffWeight
-                      + Parity * ParityWeight + Frontier * FrontierWeight
-                      + PotMob * PotMobWeight;
-
-    public override string ToString()
-        => $"位置={Position}×{PosWeight}={Position * PosWeight}  "
-         + $"機動力={Mobility}×{MobWeight}={Mobility * MobWeight}  "
-         + $"安定石={Stability}×{StaWeight}={Stability * StaWeight}  "
-         + $"駒数差={StoneDiff}×{DiffWeight}={StoneDiff * DiffWeight}  "
-         + $"パリティ={Parity}×{ParityWeight}={Parity * ParityWeight}  "
-         + $"フロンティア={Frontier}×{FrontierWeight}={Frontier * FrontierWeight}  "
-         + $"潜在機動力={PotMob}×{PotMobWeight}={PotMob * PotMobWeight}  "
-         + $"合計={Total}";
-}
 
 /// <summary>
 /// ビットボード + 反復深化 + 置換表 + 完全読み + PVS（NegaScout）による最強オセロAI
 /// </summary>
 public class OthelloAI
 {
-    // D1対角線マスク（col-row = k、インデックス k+7 = 0..14）
-    // D2対角線マスク（col+row = k、インデックス k = 0..14）
-    private static readonly ulong[] s_diagD1Masks = new ulong[15];
-    private static readonly ulong[] s_diagD2Masks = new ulong[15];
+    /// <summary>評価関数(学習したパターン評価)</summary>
+    private readonly PatternEvaluator _evaluator;
 
-    static OthelloAI()
+    /// <param name="transpositionTableSizeBits">置換表の件数を 2 の何乗にするか(標準は約800万件。ブラウザ版は小さくする)</param>
+    public OthelloAI(PatternEvaluator evaluator, int transpositionTableSizeBits = TranspositionTable.DefaultSizeBits)
     {
-        // D1: 左上→右下方向（col - row = 一定）
-        for (int k = -7; k <= 7; k++)
-        {
-            ulong mask = 0UL;
-            for (int r = 0; r < 8; r++)
-            {
-                int c = r + k;
-                if (c >= 0 && c < 8) mask |= 1UL << (r * 8 + c);
-            }
-            s_diagD1Masks[k + 7] = mask;
-        }
-        // D2: 右上→左下方向（col + row = 一定）
-        for (int k = 0; k <= 14; k++)
-        {
-            ulong mask = 0UL;
-            for (int r = 0; r < 8; r++)
-            {
-                int c = k - r;
-                if (c >= 0 && c < 8) mask |= 1UL << (r * 8 + c);
-            }
-            s_diagD2Masks[k] = mask;
-        }
+        _evaluator = evaluator;
+        _tt = new TranspositionTable(transpositionTableSizeBits);
     }
-    private readonly WeightSet _weights;
-    private readonly int[] _positionTable;
 
-    /// <summary>デフォルト重みで生成（既存コードとの後方互換）</summary>
-    public OthelloAI() : this(WeightSet.Default()) { }
+    /// <summary>
+    /// 中盤の探索で MPC を使うかの上書き。null ならレベルどおり(AiLevel.UsesMpc)。
+    /// MPC あり・なしを比べるため(--mpc / --no-mpc)に使う
+    /// </summary>
+    public bool? MpcOverride { get; init; }
 
-    /// <summary>WeightSetを注入して生成（学習モード用）</summary>
-    public OthelloAI(WeightSet weights)
-    {
-        _weights = weights;
-        _positionTable = weights.PositionTable;
-    }
+    /// <summary>MPC の余裕(誤差の標準偏差の何倍か)の上書き。null ならレベルどおり(AiLevel.MpcSelectivity)。切り方を選ぶため(--mpc-t)に使う</summary>
+    public double? MpcSelectivityOverride { get; init; }
+
+    /// <summary>いま選んでいる手で MPC を使うか(ChooseMove でレベルから決める)</summary>
+    private bool _useMpc;
+    /// <summary>いま選んでいる手の MPC の余裕</summary>
+    private double _mpcSelectivity;
+    /// <summary>MPC の浅い読みの最中か(浅い読みの中では MPC を使わない)</summary>
+    private bool _inMpcProbe;
+    /// <summary>反復深化でいま読んでいる深さ(ルートでは MPC を使わないため)</summary>
+    private int _iterationDepth;
+    private int _mpcCutCount;          // MPC で切った回数
 
     private int _maxDepth;
     private int _recursionsCount;
+
+    /// <summary>直前の1手で読んだ局面の数(探索の速さを比べるため)</summary>
+    public int LastNodeCount => _recursionsCount;
     private int _abCutCount;           // αβカット発生回数
     private int _pvsResearchCount;     // PVS再探索回数
     private bool _perfSolveTriggered;  // 完全読みに移行したか
@@ -98,38 +52,47 @@ public class OthelloAI
     // History Heuristic: 各マスのカットスコア（深さ²を加算、反復深化ごとに老化）
     private readonly int[] _historyTable = new int[64];
 
-    private readonly TranspositionTable _tt = new();
+    private readonly TranspositionTable _tt;
 
-    // 完全読みに切り替える残り空きマス数の閾値。
-    // 残り18マス以下で完全読みに移行する根拠:
-    // - αβ枝刈り + 置換表 + Move Orderingにより professional強度でも数秒以内に完了（実測値ベース）
-    // - 14→18 に拡張: 終盤精度が大幅に向上。思考時間が伸びる場合は14〜16に戻すこと
-    private const int PerfectSolveThreshold = 18;
+    // 完全読みに切り替える残り空きマス数。レベルから決める(AiLevel.PerfectSolveEmpties)
+    private int _perfectSolveEmpties;
 
-    // 評価値の無限大（FinalScore の ±Inf±石数差 表現と区別するため -1 を使う）
+    // 探索の窓の無限大。どの評価値・終局の点数よりも外側にある必要がある
     private const int Inf = 1_000_000_000;
+
+    // 終局の点数の基準(勝ち = WinScore + 終局の値、負け = -WinScore + 終局の値。終局の値は FinalValue)。
+    // 窓の端(±Inf)と重なると、2石差以上の勝ち負けが窓の外に出て、最善手を正しく選べなくなるため、Infの内側に置く
+    private const int WinScore = Inf / 2;
 
     public (int x, int y) AI(MainGameData gameData, bool isDebug)
     {
         OthelloDebugLog._isDebug = isDebug;
+        StartAILog(gameData._turnCounter);
+
+        int bestMove = ChooseMove(BitBoard.FromMainGameData(gameData), gameData._aiLevel);
+        StopAILog();
+        return BitBoard.BitToCoord(bestMove);
+    }
+
+    /// <summary>
+    /// 盤面(手番の側から見たもの)とレベルから、打つマスのビット位置を選ぶ。終盤の速さの測定(--endgame-bench)からも呼ぶ。
+    /// forcePerfectSolve は、レベルに関係なく完全読みする(完全読みに入る上限を見直すための測定用)
+    /// </summary>
+    internal int ChooseMove(BitBoard board, int requestedLevel, bool forcePerfectSolve = false)
+    {
         _recursionsCount = 0;
         _abCutCount = 0;
         _pvsResearchCount = 0;
         _perfSolveTriggered = false;
         _lastProgressLogNodes = 0;
-        StartAILog(gameData._turnCounter);
+        int level = AiLevel.Clamp(requestedLevel);
+        _maxDepth = AiLevel.MidgameDepth(level);
+        _perfectSolveEmpties = AiLevel.PerfectSolveEmpties(level);
+        _useMpc = MpcOverride ?? AiLevel.UsesMpc(level);
+        _mpcSelectivity = MpcSelectivityOverride ?? AiLevel.MpcSelectivity(level);
+        _mpcCutCount = 0;
 
-        _maxDepth = gameData._AIStrength switch
-        {
-            AIStrength.Beginner => 3,
-            AIStrength.Normal => 6,
-            AIStrength.Expert => 10,
-            AIStrength.Professional => 14,
-            _ => 6
-        };
-
-        BitBoard board = BitBoard.FromMainGameData(gameData);
-        InfoLog($"AI思考開始 ({gameData._AIStrength}: 深さ{_maxDepth}  残りマス={board.EmptyCount})");
+        InfoLog($"AI思考開始 (レベル{level}: 中盤{_maxDepth}手読み・残り{_perfectSolveEmpties}マスから完全読み・MPC{(_useMpc ? $"あり({_mpcSelectivity:F2})" : "なし")}  残りマス={board.EmptyCount})");
         _tt.Clear();
 
         // Killer Move テーブル初期化
@@ -139,28 +102,56 @@ public class OthelloAI
         // History Heuristic テーブルリセット
         Array.Clear(_historyTable, 0, 64);
 
+        // 決めた深さを最後まで読む(途中で打ち切らない)。1手10秒以内に終わるようにするのは、探索を速くして達成する
+        int bestMove = forcePerfectSolve || board.EmptyCount <= _perfectSolveEmpties
+            ? SolvePerfectRoot(board)
+            : IterativeDeepening(board, _maxDepth);
+
+        DebugLog($"探索統計: αβカット={_abCutCount}  PVS再探索={_pvsResearchCount}  MPCカット={_mpcCutCount}  完全読み={(_perfSolveTriggered ? "あり" : "なし")}");
+        DebugLog($"置換表: ヒット={_tt.HitCount} ({_tt.HitRate:F1}%)  ミス={_tt.MissCount}");
+
+        GameLog($"AI評価\nレベル:{level} 探索深さ:{_maxDepth} 完全読み:{_perfSolveTriggered} 総計算手順回数：{_recursionsCount} 最良手:{BitBoard.BitToCoord(bestMove)}");
+        return bestMove;
+    }
+
+    /// <summary>
+    /// 近似(MPC)なしで maxDepth まで反復深化し、深さ1〜maxDepth のルートの値を返す(添字 = 深さ。0 は使わない)。
+    /// MPC の誤差を集める測定(--mpc-stats)で、浅い読みと深い読みの値を比べるために使う
+    /// </summary>
+    internal int[] RootValuesByDepth(BitBoard board, int maxDepth)
+    {
+        _recursionsCount = 0;
+        _maxDepth = maxDepth;
+        _useMpc = false;
+        _tt.Clear();
+        _killerMoves = new int[maxDepth + 2, 2];
+        for (int d = 0; d < maxDepth + 2; d++) { _killerMoves[d, 0] = -1; _killerMoves[d, 1] = -1; }
+        Array.Clear(_historyTable, 0, 64);
+
+        var values = new int[maxDepth + 1];
+        IterativeDeepening(board, maxDepth, values);
+        return values;
+    }
+
+    /// <summary>
+    /// MPC で、深さ deep の読みの代わりに使う浅い読みの深さ。深さの半分ほどにし、偶奇を deep にそろえる
+    /// (オセロの評価値は、どちらの手番で読み終えるかで偏るため)
+    /// </summary>
+    internal static int MpcShallowDepth(int deep) => ((deep / 2) & ~1) + (deep & 1);
+
+    /// <summary>終局まで読み切った値か(中盤の評価値ではなく、WinScore を含む点数か)</summary>
+    internal static bool IsFinalScore(int score) => Math.Abs(score) >= WinScore / 2;
+
+    /// <summary>反復深化で maxDepth まで読み、最善手を返す。valuesByDepth を渡すと、各深さのルートの値を書く</summary>
+    private int IterativeDeepening(BitBoard board, int maxDepth, int[]? valuesByDepth = null)
+    {
         int bestMove = -1;
         int prevScore = 0; // Aspiration Window 用（前の深さのスコア）
+        EvalState rootState = PatternEvaluator.CreateState(board);
 
-        for (int depth = 1; depth <= _maxDepth; depth++)
+        for (int depth = 1; depth <= maxDepth; depth++)
         {
-            // ルートが完全読み閾値以下なら完全読みを直接実行（NegaScout途中からの完全読みを防ぐ）
-            if (board.EmptyCount <= PerfectSolveThreshold)
-            {
-                _perfSolveTriggered = true;
-                InfoLog($"残り{board.EmptyCount}マス → 完全読みモードへ切り替え");
-                int perfScore = SolvePerfect(board, -Inf, Inf);
-                // 置換表からルートの最善手を取得
-                ulong rootHash = _tt.ComputeHash(board);
-                if (_tt.TryGetBestMoveOnly(rootHash, out int ttBest) && ttBest >= 0)
-                    bestMove = ttBest;
-                string perfScoreStr = Math.Abs(perfScore) >= Inf - 1
-                    ? (perfScore > 0 ? $"勝ち(+{perfScore - (Inf - 1)}石差)" : $"負け(-{-perfScore - (Inf - 1)}石差)")
-                    : $"{perfScore}（引き分け）";
-                InfoLog($"完全読み完了: 最善手={BitBoard.BitToCoord(bestMove)}  スコア={perfScoreStr}  ノード={_recursionsCount}");
-                break;
-            }
-
+            _iterationDepth = depth;
             for (int i = 0; i < 64; i++) _historyTable[i] >>= 1;
 
             int iterBest = -1;
@@ -172,53 +163,45 @@ public class OthelloAI
             const int AspirationDelta = 50;
             if (depth <= 2)
             {
-                score = NegaScout(board, depth, -Inf, Inf, ref iterBest);
+                score = NegaScout(board, rootState, depth, -Inf, Inf, ref iterBest);
             }
             else
             {
                 int lo = prevScore - AspirationDelta;
                 int hi = prevScore + AspirationDelta;
-                score = NegaScout(board, depth, lo, hi, ref iterBest);
+                score = NegaScout(board, rootState, depth, lo, hi, ref iterBest);
                 if (score <= lo)        // fail-low: 下限を広げて再探索
                 {
+                    InfoLog($"深さ {depth,2} 窓の下に外れた(値 {score} ≤ {lo}、ここまで ノード={_recursionsCount})。下限を広げて読み直す");
                     iterBest = -1;
-                    score = NegaScout(board, depth, -Inf, hi, ref iterBest);
+                    score = NegaScout(board, rootState, depth, -Inf, hi, ref iterBest);
                 }
                 else if (score >= hi)   // fail-high: 上限を広げて再探索
                 {
+                    InfoLog($"深さ {depth,2} 窓の上に外れた(値 {score} ≥ {hi}、ここまで ノード={_recursionsCount})。上限を広げて読み直す");
                     iterBest = -1;
-                    score = NegaScout(board, depth, lo, Inf, ref iterBest);
+                    score = NegaScout(board, rootState, depth, lo, Inf, ref iterBest);
                 }
             }
             prevScore = score;
+            if (valuesByDepth != null) valuesByDepth[depth] = score;
 
             if (iterBest >= 0) bestMove = iterBest;
 
             InfoLog($"深さ {depth,2} 完了: 最善手={BitBoard.BitToCoord(bestMove)}  スコア={score,10}  ノード={_recursionsCount}");
         }
-
-        if (bestMove >= 0 && !_perfSolveTriggered)
-        {
-            BitBoardEvaluate(board.DoMove(bestMove), out EvalDetail bestDetail);
-            DebugLog($"評価内訳(最善手{BitBoard.BitToCoord(bestMove)}, AI視点): 位置={-bestDetail.Position * bestDetail.PosWeight}  機動力={-bestDetail.Mobility * bestDetail.MobWeight}  安定石={-bestDetail.Stability * bestDetail.StaWeight}  駒数差={-bestDetail.StoneDiff * bestDetail.DiffWeight}  合計={-bestDetail.Total}");
-        }
-
-        DebugLog($"探索統計: αβカット={_abCutCount}  PVS再探索={_pvsResearchCount}  完全読み={(_perfSolveTriggered ? "あり" : "なし")}");
-        DebugLog($"置換表: ヒット={_tt.HitCount} ({_tt.HitRate:F1}%)  ミス={_tt.MissCount}");
-
-        GameLog($"AI評価\n探索深さ:{_maxDepth} 総計算手順回数：{_recursionsCount} 最良手:{BitBoard.BitToCoord(bestMove)}");
-        StopAILog();
-
-        return BitBoard.BitToCoord(bestMove);
+        return bestMove;
     }
 
     /// <summary>
     /// PVS（NegaScout）探索。置換表・完全読みを統合。
     /// board.Player = 現在の手番プレイヤーの石。
     /// </summary>
-    private int NegaScout(BitBoard board, int depth, int alpha, int beta, ref int bestMove)
+    private int NegaScout(BitBoard board, in EvalState state, int depth, int alpha, int beta, ref int bestMove)
     {
         ulong hash = _tt.ComputeHash(board);
+        // 置換表に書く値の種類(上限・下限・正確)は、探索を始める前のαで決める。ループ中に更新したαで決めると、βカットの値が「上限」として書かれてしまう
+        int originalAlpha = alpha;
 
         // 置換表参照
         if (_tt.TryGet(hash, depth, alpha, beta, out int ttScore, out int ttBestMove))
@@ -232,7 +215,7 @@ public class OthelloAI
         if (depth <= 0)
         {
             _recursionsCount++;
-            int eval = BitBoardEvaluate(board, out _);
+            int eval = Evaluate(board, state);
             _tt.Store(hash, 0, eval, alpha, beta, -1);
             return eval;
         }
@@ -250,9 +233,18 @@ public class OthelloAI
                 return finalScore;
             }
             _recursionsCount++;
-            int passScore = -NegaScout(new BitBoard(board.Opponent, board.Player), depth - 1, -beta, -alpha, ref bestMove);
+            PatternEvaluator.Pass(state, out EvalState passedState);
+            int passScore = -NegaScout(passed, passedState, depth - 1, -beta, -alpha, ref bestMove);
             _tt.Store(hash, depth, passScore, alpha, beta, -1);
             return passScore;
+        }
+
+        // MPC: 浅い読みの値から、深い読みが窓の外になると見込めるなら、読まずに切る(ルートでは使わない)
+        if (_useMpc && !_inMpcProbe && depth >= MpcMinDepth && depth < _iterationDepth
+            && TryMultiProbCut(board, state, depth, alpha, beta, out int mpcScore))
+        {
+            _mpcCutCount++;
+            return mpcScore;
         }
 
         // stackalloc でGCフリーな合法手バッファを確保
@@ -275,46 +267,54 @@ public class OthelloAI
             }
         }
 
-        // Move Ordering 2: Killer Move（TT手の直後に配置）
-        int killer1 = depth < _killerMoves.GetLength(0) ? _killerMoves[depth, 0] : -1;
-        int killer2 = depth < _killerMoves.GetLength(0) ? _killerMoves[depth, 1] : -1;
-        if (killer1 >= 0 && killer1 != ttBestMove)
+        if (Ordering != null && depth >= MidgameOrderingDepth)
         {
-            for (int k = insertPos; k < moveCount; k++)
+            // Move Ordering 2': 深い節点では、置換表の手の後ろを「並べ替え用の軽い評価 + 相手の打てる手の数」の小さい順に並べる
+            OrderByLightEvaluation(board, state, moves, insertPos);
+        }
+        else
+        {
+            // Move Ordering 2: Killer Move（TT手の直後に配置）
+            int killer1 = depth < _killerMoves.GetLength(0) ? _killerMoves[depth, 0] : -1;
+            int killer2 = depth < _killerMoves.GetLength(0) ? _killerMoves[depth, 1] : -1;
+            if (killer1 >= 0 && killer1 != ttBestMove)
             {
-                if (moves[k] == killer1)
+                for (int k = insertPos; k < moveCount; k++)
                 {
-                    if (k != insertPos) { moves[k] = moves[insertPos]; moves[insertPos] = killer1; }
-                    insertPos++;
-                    break;
+                    if (moves[k] == killer1)
+                    {
+                        if (k != insertPos) { moves[k] = moves[insertPos]; moves[insertPos] = killer1; }
+                        insertPos++;
+                        break;
+                    }
                 }
             }
-        }
-        if (killer2 >= 0 && killer2 != ttBestMove && killer2 != killer1)
-        {
-            for (int k = insertPos; k < moveCount; k++)
+            if (killer2 >= 0 && killer2 != ttBestMove && killer2 != killer1)
             {
-                if (moves[k] == killer2)
+                for (int k = insertPos; k < moveCount; k++)
                 {
-                    if (k != insertPos) { moves[k] = moves[insertPos]; moves[insertPos] = killer2; }
-                    insertPos++;
-                    break;
+                    if (moves[k] == killer2)
+                    {
+                        if (k != insertPos) { moves[k] = moves[insertPos]; moves[insertPos] = killer2; }
+                        insertPos++;
+                        break;
+                    }
                 }
             }
-        }
 
-        // Move Ordering 3: 残り手を History スコア降順で挿入ソート（手数が少ないためO(n²)で十分）
-        for (int k = insertPos + 1; k < moveCount; k++)
-        {
-            int key = moves[k];
-            int keyScore = _historyTable[key];
-            int j = k - 1;
-            while (j >= insertPos && _historyTable[moves[j]] < keyScore)
+            // Move Ordering 3: 残り手を History スコア降順で挿入ソート（手数が少ないためO(n²)で十分）
+            for (int k = insertPos + 1; k < moveCount; k++)
             {
-                moves[j + 1] = moves[j];
-                j--;
+                int key = moves[k];
+                int keyScore = _historyTable[key];
+                int j = k - 1;
+                while (j >= insertPos && _historyTable[moves[j]] < keyScore)
+                {
+                    moves[j + 1] = moves[j];
+                    j--;
+                }
+                moves[j + 1] = key;
             }
-            moves[j + 1] = key;
         }
 
         int localBestMove = moves[0];
@@ -323,7 +323,9 @@ public class OthelloAI
         for (int i = 0; i < moveCount; i++)
         {
             int move = moves[i];
-            BitBoard next = board.DoMove(move);
+            ulong flipped = board.GetFlipped(move);
+            BitBoard next = DoMove(board, move, flipped);
+            PatternEvaluator.Play(state, move, flipped, out EvalState nextState);
             _recursionsCount++;
 
             int score;
@@ -331,29 +333,19 @@ public class OthelloAI
             {
                 // PV手はフルウィンドウで探索
                 int dummy = -1;
-                score = -NegaScout(next, depth - 1, -beta, -alpha, ref dummy);
+                score = -NegaScout(next, nextState, depth - 1, -beta, -alpha, ref dummy);
             }
             else
             {
-                // LMR（Late Move Reductions）:
-                // Move Ordering で後半の手（TT/Killer以外）は外れの可能性が高い。
-                // depth-2 で Null Window 探索し、alpha を超えた場合のみ full depth で再探索する。
-                // 条件: depth>=3 かつ insertPos（TT/Killer枠）より後の手
+                // 2手目以降は Null Window で「αより良いか」だけを確かめる
                 int dummy = -1;
-                bool canLMR = depth >= 3 && i >= Math.Max(2, insertPos);
-                int lmrDepth = canLMR ? depth - 2 : depth - 1;
-
-                score = -NegaScout(next, lmrDepth, -alpha - 1, -alpha, ref dummy);
-
-                // LMR で alpha を超えた → full depth の Null Window で再確認
-                if (canLMR && score > alpha)
-                    score = -NegaScout(next, depth - 1, -alpha - 1, -alpha, ref dummy);
+                score = -NegaScout(next, nextState, depth - 1, -alpha - 1, -alpha, ref dummy);
 
                 // PVS再探索: Null Window を超えた場合のみ（この手が PV 候補）
                 if (score > alpha && score < beta)
                 {
                     _pvsResearchCount++;
-                    score = -NegaScout(next, depth - 1, -beta, -alpha, ref dummy);
+                    score = -NegaScout(next, nextState, depth - 1, -beta, -alpha, ref dummy);
                 }
             }
 
@@ -361,8 +353,7 @@ public class OthelloAI
             {
                 bestScore = score;
                 localBestMove = move;
-                if (depth == _maxDepth || board.EmptyCount > PerfectSolveThreshold)
-                    bestMove = move;
+                bestMove = move; // 子の局面では使われない(呼び出し側が捨てる ref を渡す)。ルートの最善手になる
             }
 
             alpha = Math.Max(alpha, score);
@@ -380,136 +371,222 @@ public class OthelloAI
                 }
                 // History Heuristic 更新
                 _historyTable[move] += depth * depth;
-                _tt.Store(hash, depth, bestScore, alpha, beta, localBestMove);
+                _tt.Store(hash, depth, bestScore, originalAlpha, beta, localBestMove);
                 return bestScore;
             }
         }
 
-        _tt.Store(hash, depth, bestScore, alpha, beta, localBestMove);
+        _tt.Store(hash, depth, bestScore, originalAlpha, beta, localBestMove);
         return bestScore;
     }
 
+    // ---- MPC(Multi-ProbCut) ----
+    // 深さ D の読みの値は、浅い読み(深さ d = MpcShallowDepth(D))の値 + 平均のずれ にほぼ等しく、
+    // その誤差は正規分布に近い(標準偏差 σ)。浅い読みで「β + 余裕 以上」なら、深い読みも β 以上と見込んで切る(αも同じ)。
+    // ずれと σ は、実戦の局面で集めた値(--mpc-stats)。
+
+    /// <summary>MPC を使う最小の深さ(これより浅いと、浅い読みの手間が節約より大きい)</summary>
+    private const int MpcMinDepth = 3;
+
     /// <summary>
-    /// 完全読み（終盤ソルバー）。評価関数を使わず駒数差のみで探索。
+    /// MPC を試す。切れたら true で、score に窓の端(β か α)を返す。
+    /// 静的な評価値がすでに窓の外にあるときだけ、浅い読みを試す(浅い読みの無駄を減らすため)
     /// </summary>
-    private int SolvePerfect(BitBoard board, int alpha, int beta)
+    private bool TryMultiProbCut(BitBoard board, in EvalState state, int depth, int alpha, int beta, out int score)
     {
-        // 100万ノードごとに進捗ログ
+        score = 0;
+        int shallow = MpcShallowDepth(depth);
+        (double meanDiscs, double sigmaDiscs) = MpcError.Get(board.EmptyCount, depth);
+        // 値は評価値の単位(石数 × Scale)
+        int margin = (int)Math.Ceiling(_mpcSelectivity * sigmaDiscs * PatternEvaluator.Scale);
+        int shift = (int)Math.Round(meanDiscs * PatternEvaluator.Scale);
+        int eval = Evaluate(board, state);
+        int dummy = -1;
+
+        // 深い読み ≈ 浅い読み + shift。深い読み ≥ β と見込めるのは、浅い読み ≥ β − shift + margin のとき
+        if (beta < WinScore / 2 && eval >= beta)
+        {
+            int probeBeta = beta - shift + margin;
+            _inMpcProbe = true;
+            int value = NegaScout(board, state, shallow, probeBeta - 1, probeBeta, ref dummy);
+            _inMpcProbe = false;
+            if (value >= probeBeta) { score = beta; return true; }
+        }
+        if (alpha > -WinScore / 2 && eval <= alpha)
+        {
+            int probeAlpha = alpha - shift - margin;
+            _inMpcProbe = true;
+            int value = NegaScout(board, state, shallow, probeAlpha, probeAlpha + 1, ref dummy);
+            _inMpcProbe = false;
+            if (value <= probeAlpha) { score = alpha; return true; }
+        }
+        return false;
+    }
+
+    // ---- 完全読み ----
+    // 完全読みの値は、手番から見た終局の値(FinalValue。石数の差 × FinalValueScale ± 終局の空きマス)。
+    // 中盤の探索の点数(WinScore + 終局の値)とは別の尺度で、置換表は手ごとに空にするので混ざらない。
+
+    /// <summary>終局の値で、石数の差に掛ける倍率(終局の空きマスは60より少ないので、64倍すれば石数の差の順が崩れない)</summary>
+    private const int FinalValueScale = 64;
+    /// <summary>終局の値の最大(64対0で、空きマスが60残ったとしても超えない)</summary>
+    private const int MaxFinalValue = 64 * FinalValueScale + 60;
+    /// <summary>どの終局の値よりも小さい値(最善の値を探し始めるときに使う)</summary>
+    private const int BelowAnyFinalValue = -MaxFinalValue - 1;
+    /// <summary>空きマスがこの数以下になったら、置換表と並べ替えを使わない小さな探索に切り替える</summary>
+    private const int SmallSolveEmpties = 6;
+    /// <summary>空きマスがこの数以上の局面では、評価関数も使って手を並べる(未満は相手の打てる手の数だけで並べる)</summary>
+    private const int EvalOrderingEmpties = 12;
+
+    /// <summary>
+    /// 中盤の手の並べ替え用の軽い評価(なければ、中盤は置換表・Killer・History だけで並べる)。番号は探索で持ち歩いている EvalState を使う。
+    /// 完全読みの並べ替えには使わない(試すと、64か所の評価で並べるより読む局面が11〜24%増えた)
+    /// </summary>
+    public OrderingEvaluator? Ordering { get; init; }
+    /// <summary>
+    /// 中盤で、並べ替え用の軽い評価で手を並べ始める深さ(--ord-mid-depth。これより浅い節点は Killer と History で並べる)。
+    /// レベル12の中盤で2〜6を比べ、4がいちばん速かった(浅くすると局面は減るが、並べる手間のほうが大きい)
+    /// </summary>
+    public int MidgameOrderingDepth { get; init; } = DefaultMidgameOrderingDepth;
+    /// <summary>中盤の並べ替えで、相手の打てる手1つあたりに足す値(--ord-mobility。64・128・256を比べて64にした)</summary>
+    public int MidgameOrderingMobilityWeight { get; init; } = DefaultMidgameOrderingMobilityWeight;
+
+    private const int DefaultMidgameOrderingDepth = 4;
+    private const int DefaultMidgameOrderingMobilityWeight = 64;
+
+    // 盤面を4つに分けたマスク(偶数理論: 空きマスが奇数個の区画から先に打つ)
+    private const ulong QuadrantTopLeft = 0x0000_0000_0F0F_0F0FUL;
+    private const ulong QuadrantTopRight = 0x0000_0000_F0F0_F0F0UL;
+    private const ulong QuadrantBottomLeft = 0x0F0F_0F0F_0000_0000UL;
+    private const ulong QuadrantBottomRight = 0xF0F0_F0F0_0000_0000UL;
+
+    /// <summary>完全読みで最善手を求める</summary>
+    private int SolvePerfectRoot(BitBoard board)
+    {
+        InfoLog($"残り{board.EmptyCount}マス → 完全読みモードへ切り替え");
+        _perfSolveTriggered = true;
+
+        // ルートは自分で手を並べて読み、最善手を確実に手元に残す
+        Span<int> moves = stackalloc int[64];
+        EvalState rootState = PatternEvaluator.CreateState(board);
+        int moveCount = OrderSolveMoves(board, rootState, board.GetMoves(), -1, moves);
+
+        // 少なくとも1手は打つので、終局の値は「64石差 + 今の空きマス」を超えない(超えない値が見つかったら、ほかの手を読まずに済む)
+        int bound = FinalValueBound(board.EmptyCount);
+        int alpha = -bound - 1, beta = bound + 1;
+        int bestMove = moves[0];
+        int bestScore = BelowAnyFinalValue;
+        for (int i = 0; i < moveCount; i++)
+        {
+            ulong flipped = board.GetFlipped(moves[i]);
+            BitBoard next = DoMove(board, moves[i], flipped);
+            PlayForSolve(rootState, moves[i], flipped, next.EmptyCount, out EvalState nextState);
+            _recursionsCount++;
+            int score;
+            if (i == 0)
+            {
+                score = -Solve(next, nextState, -beta, -alpha);
+            }
+            else
+            {
+                score = -Solve(next, nextState, -alpha - 1, -alpha);
+                if (score > alpha) score = -Solve(next, nextState, -beta, -alpha);
+            }
+            if (score > bestScore) { bestScore = score; bestMove = moves[i]; }
+            alpha = Math.Max(alpha, score);
+            if (alpha >= bound) break; // これより良い値はない
+        }
+
+        (int discDiff, int emptiesLeft) = SplitFinalValue(bestScore);
+        string result = bestScore > 0 ? $"勝ち(+{discDiff}石差、空き{emptiesLeft}マスで終局)"
+                      : bestScore < 0 ? $"負け({discDiff}石差、空き{emptiesLeft}マスで終局)" : "引き分け";
+        InfoLog($"完全読み完了: 最善手={BitBoard.BitToCoord(bestMove)}  結果={result}  ノード={_recursionsCount}");
+        return bestMove;
+    }
+
+    /// <summary>
+    /// 完全読み(置換表・ETC・手の並べ替えつきの NegaScout)。値は手番から見た終局の値(FinalValue)。
+    /// state(差分評価の番号)は、手の並べ替えに評価関数を使う残り EvalOrderingEmpties マス以上の局面でだけ正しい値が入っている
+    /// </summary>
+    private int Solve(BitBoard board, in EvalState state, int alpha, int beta)
+    {
+        // 値は ±FinalValueBound(空きマス) の外にならないので、窓をその範囲に絞る(いちばん良い勝ちが見つかったら、ほかの手を読まずに済む)
+        int empties = board.EmptyCount;
+        int bound = FinalValueBound(empties);
+        if (beta > bound) beta = bound;
+        if (alpha < -bound) alpha = -bound;
+        if (alpha >= beta) return alpha;
+
+        if (empties <= SmallSolveEmpties) return SolveSmall(board, alpha, beta, empties);
+
+        // 確定石で値の上限を絞る(勝ちを探しているときだけ)
+        if (alpha > 0)
+        {
+            int upper = StabilityUpperBound(board, empties);
+            if (upper <= alpha) return upper;
+            if (upper < beta) beta = upper;
+        }
+
+        // 100万局面ごとに進み具合を書く
         if (_recursionsCount - _lastProgressLogNodes >= 1_000_000)
         {
             _lastProgressLogNodes = _recursionsCount;
-            InfoLog($"完全読み進捗: ノード={_recursionsCount}  残り{board.EmptyCount}マス");
+            InfoLog($"完全読み進捗: ノード={_recursionsCount}  残り{empties}マス");
         }
 
         ulong hash = _tt.ComputeHash(board);
+        // 置換表に書く値の種類は、探索を始める前のαで決める
+        int originalAlpha = alpha;
         if (_tt.TryGet(hash, 64, alpha, beta, out int ttScore, out int ttBestMove))
             return ttScore;
 
         ulong movesBit = board.GetMoves();
-
         if (movesBit == 0)
         {
-            BitBoard passed = new BitBoard(board.Opponent, board.Player);
-            if (passed.GetMoves() == 0)
-            {
-                int final = FinalScore(board);
-                _tt.Store(hash, 64, final, alpha, beta, -1);
-                return final;
-            }
+            var passed = new BitBoard(board.Opponent, board.Player);
+            if (passed.GetMoves() == 0) return FinalValue(board);
             _recursionsCount++;
-            int passScore = -SolvePerfect(new BitBoard(board.Opponent, board.Player), -beta, -alpha);
-            _tt.Store(hash, 64, passScore, alpha, beta, -1);
-            return passScore;
+            PatternEvaluator.Pass(state, out EvalState passedState);
+            return -Solve(passed, passedState, -beta, -alpha);
         }
 
-        // stackalloc でGCフリーな合法手バッファを確保
-        Span<int> movesBuffer = stackalloc int[64];
-        int moveCount = BitBoard.GetMoveArray(movesBit, movesBuffer);
-        Span<int> moves = movesBuffer[..moveCount];
+        Span<int> moves = stackalloc int[64];
+        int moveCount = OrderSolveMoves(board, state, movesBit, ttBestMove, moves);
 
-        // Move Ordering: 置換表の最善手を先頭にスワップ
-        int sortStart = 0;
-        if (ttBestMove >= 0)
-        {
-            for (int k = 0; k < moveCount; k++)
-            {
-                if (moves[k] == ttBestMove)
-                {
-                    moves[k] = moves[0]; moves[0] = ttBestMove;
-                    sortStart = 1;
-                    break;
-                }
-            }
-        }
-
-        // Move Ordering: コーナー優先（終盤は角を確実に取る）
-        const ulong CornerMask = 0x8100000000000081UL;
-        for (int ci = moveCount - 1; ci >= sortStart; ci--)
-        {
-            if (((1UL << moves[ci]) & CornerMask) != 0)
-            {
-                int tmp = moves[sortStart]; moves[sortStart] = moves[ci]; moves[ci] = tmp;
-                sortStart++;
-            }
-        }
-
-        // Move Ordering: 残り12マス以下のみ最小機動力原理（相手の応手数昇順）で挿入ソート
-        if (board.EmptyCount <= 12 && moveCount - sortStart > 1)
-        {
-            // 機動力を事前計算（挿入ソート内での重複呼び出しを避ける）
-            Span<int> mobBuffer = stackalloc int[64];
-            for (int k = sortStart; k < moveCount; k++)
-                mobBuffer[k] = BitOperations.PopCount(board.DoMove(moves[k]).GetMoves());
-
-            for (int k = sortStart + 1; k < moveCount; k++)
-            {
-                int keyMove = moves[k];
-                int keyMob = mobBuffer[k];
-                int j = k - 1;
-                while (j >= sortStart && mobBuffer[j] > keyMob)
-                {
-                    moves[j + 1] = moves[j];
-                    mobBuffer[j + 1] = mobBuffer[j];
-                    j--;
-                }
-                moves[j + 1] = keyMove;
-                mobBuffer[j + 1] = keyMob;
-            }
-        }
-
-        int bestScore = -Inf;
-        int localBestMove = moves[0];
-
+        // ETC(Enhanced Transposition Cutoff): 子の局面の置換表に「上限 S ≤ -β」があれば、親は β 以上で切れる
         for (int i = 0; i < moveCount; i++)
         {
-            BitBoard next = board.DoMove(moves[i]);
-
-            // ETC（Enhanced Transposition Cutoff）:
-            // 子局面の置換表を事前確認し、βカット可能なら即座に枝刈りする。
-            // 子のUpperBound S ≤ -beta → 子の真値 ≤ S ≤ -beta → 親は ≥ beta（βカット）
-            ulong childHash = _tt.ComputeHash(next);
-            if (_tt.TryGetRaw(childHash, out TTEntryType childType, out int childRawScore)
-                && childType == TTEntryType.UpperBound && childRawScore <= -beta)
+            ulong childHash = _tt.ComputeHash(board.DoMove(moves[i]));
+            if (_tt.TryGetRaw(childHash, 64, out TTEntryType childType, out int childScore)
+                && childType == TTEntryType.UpperBound && -childScore >= beta)
             {
                 _abCutCount++;
-                _tt.Store(hash, 64, beta, alpha, beta, moves[i]);
-                return beta;
+                _tt.Store(hash, 64, -childScore, originalAlpha, beta, moves[i]);
+                return -childScore;
             }
+        }
 
+        int bestScore = BelowAnyFinalValue;
+        int localBestMove = moves[0];
+        for (int i = 0; i < moveCount; i++)
+        {
+            ulong flipped = board.GetFlipped(moves[i]);
+            BitBoard next = DoMove(board, moves[i], flipped);
+            PlayForSolve(state, moves[i], flipped, empties - 1, out EvalState nextState);
             _recursionsCount++;
 
             int score;
             if (i == 0)
             {
-                score = -SolvePerfect(next, -beta, -alpha);
+                score = -Solve(next, nextState, -beta, -alpha);
             }
             else
             {
-                score = -SolvePerfect(next, -alpha - 1, -alpha);
+                score = -Solve(next, nextState, -alpha - 1, -alpha);
                 if (score > alpha && score < beta)
                 {
                     _pvsResearchCount++;
-                    score = -SolvePerfect(next, -beta, -alpha);
+                    score = -Solve(next, nextState, -beta, -alpha);
                 }
             }
 
@@ -522,393 +599,326 @@ public class OthelloAI
             if (alpha >= beta)
             {
                 _abCutCount++;
-                _tt.Store(hash, 64, bestScore, alpha, beta, localBestMove);
-                return bestScore;
+                break;
             }
         }
 
-        _tt.Store(hash, 64, bestScore, alpha, beta, localBestMove);
+        _tt.Store(hash, 64, bestScore, originalAlpha, beta, localBestMove);
         return bestScore;
     }
 
     /// <summary>
-    /// ゲーム終了時のスコア（現プレイヤー視点の駒数差）
+    /// 完全読みで読む手の順番を決めて moves に書き、手の数を返す。
+    /// 置換表の最善手を先頭にし、残りは「相手の打てる手が少ない手」を先にする(速さ優先)。
+    /// 空きマスが多い局面では、評価関数(相手から見た値。小さいほど自分に良い)も足す。残り16マス以上では2手読みの値を使う
     /// </summary>
-    private static int FinalScore(BitBoard board)
+    private int OrderSolveMoves(BitBoard board, in EvalState state, ulong movesBit, int ttBestMove, Span<int> moves)
     {
-        int p = board.PlayerCount;
-        int o = board.OpponentCount;
-        if (p > o) return Inf - 1 + (p - o);
-        if (p < o) return -(Inf - 1) - (o - p);
+        Span<int> keys = stackalloc int[64];
+        bool useEval = board.EmptyCount >= EvalOrderingEmpties;
+        int count = 0;
+        while (movesBit != 0)
+        {
+            int move = BitOperations.TrailingZeroCount(movesBit);
+            movesBit &= movesBit - 1;
+
+            int key;
+            if (move == ttBestMove)
+            {
+                key = int.MinValue;
+            }
+            else
+            {
+                ulong flipped = board.GetFlipped(move);
+                BitBoard next = DoMove(board, move, flipped);
+                // 相手の打てる手の数(角は2倍に数える)。値が小さいほど先に読む
+                ulong opponentMoves = next.GetMoves();
+                key = (BitOperations.PopCount(opponentMoves) + BitOperations.PopCount(opponentMoves & CornerMask)) * OrderingMobilityWeight;
+                if (useEval)
+                {
+                    PatternEvaluator.Play(state, move, flipped, out EvalState nextState);
+                    key += board.EmptyCount >= ShallowSearchOrderingEmpties
+                        ? OrderingSearch(next, nextState, 1, -Inf, Inf)
+                        : Evaluate(next, nextState);
+                }
+            }
+
+            // 挿入ソート(手の数は多くても30程度なので十分)
+            int j = count - 1;
+            while (j >= 0 && keys[j] > key)
+            {
+                keys[j + 1] = keys[j];
+                moves[j + 1] = moves[j];
+                j--;
+            }
+            keys[j + 1] = key;
+            moves[j + 1] = move;
+            count++;
+        }
+        return count;
+    }
+
+    private const ulong CornerMask = 0x8100000000000081UL;
+
+    /// <summary>手の並べ替えで、相手の打てる手1つあたりに足す値(評価値は石数×32。実戦の局面で比べて決めた)</summary>
+    private const int OrderingMobilityWeight = 128;
+    /// <summary>空きマスがこの数以上の局面では、2手読み(子の局面から1手読み)の値で手を並べる</summary>
+    private const int ShallowSearchOrderingEmpties = 16;
+
+    /// <summary>
+    /// 中盤の並べ替え: moves[from..] を、子の局面の「並べ替え用の軽い評価(相手から見た値) + 相手の打てる手の数 × 重み」の小さい順に並べる
+    /// </summary>
+    private void OrderByLightEvaluation(BitBoard board, in EvalState state, Span<int> moves, int from)
+    {
+        Span<int> keys = stackalloc int[64];
+        int childEmpties = board.EmptyCount - 1;
+        for (int k = from; k < moves.Length; k++)
+        {
+            int move = moves[k];
+            ulong flipped = board.GetFlipped(move);
+            BitBoard next = DoMove(board, move, flipped);
+            PatternEvaluator.Play(state, move, flipped, out EvalState nextState);
+            ulong opponentMoves = next.GetMoves();
+            int key = Ordering!.Evaluate(nextState, childEmpties)
+                    + (BitOperations.PopCount(opponentMoves) + BitOperations.PopCount(opponentMoves & CornerMask)) * MidgameOrderingMobilityWeight;
+
+            // 挿入ソート(小さい順)
+            int j = k - 1;
+            while (j >= from && keys[j] > key)
+            {
+                keys[j + 1] = keys[j];
+                moves[j + 1] = moves[j];
+                j--;
+            }
+            keys[j + 1] = key;
+            moves[j + 1] = move;
+        }
+    }
+
+    /// <summary>手の並べ替えに使う浅い探索(評価のαβ。置換表は使わない)。値は手番から見た評価値</summary>
+    private int OrderingSearch(BitBoard board, in EvalState state, int depth, int alpha, int beta)
+    {
+        if (depth <= 0) return Evaluate(board, state);
+        ulong movesBit = board.GetMoves();
+        if (movesBit == 0)
+        {
+            var passed = new BitBoard(board.Opponent, board.Player);
+            if (passed.GetMoves() == 0) return FinalScore(board);
+            PatternEvaluator.Pass(state, out EvalState passedState);
+            return -OrderingSearch(passed, passedState, depth - 1, -beta, -alpha);
+        }
+        int best = -Inf;
+        while (movesBit != 0)
+        {
+            int move = BitOperations.TrailingZeroCount(movesBit);
+            movesBit &= movesBit - 1;
+            ulong flipped = board.GetFlipped(move);
+            PatternEvaluator.Play(state, move, flipped, out EvalState nextState);
+            int score = -OrderingSearch(DoMove(board, move, flipped), nextState, depth - 1, -beta, -alpha);
+            if (score > best)
+            {
+                best = score;
+                if (score > alpha)
+                {
+                    alpha = score;
+                    if (alpha >= beta) break;
+                }
+            }
+        }
+        return best;
+    }
+
+    /// <summary>
+    /// 残りの少ない局面の完全読み。合法手を作らず、空きマスに順に置いてみる。
+    /// 空きマスが奇数個の区画から先に打つ(偶数理論)。置換表は使わない(局面が多く、引く手間のほうが大きい)
+    /// </summary>
+    private int SolveSmall(BitBoard board, int alpha, int beta, int empties)
+    {
+        _recursionsCount++;
+        int bound = FinalValueBound(empties);
+        if (beta > bound) beta = bound;
+        if (alpha < -bound) alpha = -bound;
+        if (alpha >= beta) return alpha;
+
+        ulong empty = ~(board.Player | board.Opponent);
+        if (empties == 1) return SolveLastMove(board, empty);
+
+        if (alpha > 0 && empties >= SmallStabilityEmpties)
+        {
+            int upper = StabilityUpperBound(board, empties);
+            if (upper <= alpha) return upper;
+            if (upper < beta) beta = upper;
+        }
+
+        // 空きマスが奇数個の区画を先にする
+        ulong odd = 0;
+        if ((BitOperations.PopCount(empty & QuadrantTopLeft) & 1) != 0) odd |= QuadrantTopLeft;
+        if ((BitOperations.PopCount(empty & QuadrantTopRight) & 1) != 0) odd |= QuadrantTopRight;
+        if ((BitOperations.PopCount(empty & QuadrantBottomLeft) & 1) != 0) odd |= QuadrantBottomLeft;
+        if ((BitOperations.PopCount(empty & QuadrantBottomRight) & 1) != 0) odd |= QuadrantBottomRight;
+
+        int bestScore = BelowAnyFinalValue;
+        bool moved = false;
+        for (int pass = 0; pass < 2; pass++)
+        {
+            ulong squares = pass == 0 ? empty & odd : empty & ~odd;
+            while (squares != 0)
+            {
+                int pos = BitOperations.TrailingZeroCount(squares);
+                squares &= squares - 1;
+                ulong flipped = board.GetFlipped(pos);
+                if (flipped == 0) continue;
+
+                moved = true;
+                var next = new BitBoard(board.Opponent ^ flipped, board.Player | flipped | (1UL << pos));
+                int score = -SolveSmall(next, -beta, -alpha, empties - 1);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    if (score > alpha)
+                    {
+                        alpha = score;
+                        if (alpha >= beta) return bestScore;
+                    }
+                }
+            }
+        }
+        if (moved) return bestScore;
+
+        // 打てないときはパス。相手も打てなければ終局
+        var passed = new BitBoard(board.Opponent, board.Player);
+        if (passed.GetMoves() == 0) return FinalValue(board);
+        return -SolveSmall(passed, -beta, -alpha, empties);
+    }
+
+    /// <summary>
+    /// 空きマスが1つの局面の値(打てる側が打ち、どちらも打てなければそのまま終局)。
+    /// 打てば空きマスは0になるので、値は石数の差 × FinalValueScale だけになる
+    /// </summary>
+    private static int SolveLastMove(BitBoard board, ulong empty)
+    {
+        int pos = BitOperations.TrailingZeroCount(empty);
+        int diff = board.PlayerCount - board.OpponentCount;
+        int flipped = BitOperations.PopCount(board.GetFlipped(pos));
+        if (flipped > 0) return (diff + 2 * flipped + 1) * FinalValueScale;
+
+        int opponentFlipped = BitOperations.PopCount(new BitBoard(board.Opponent, board.Player).GetFlipped(pos));
+        if (opponentFlipped > 0) return (diff - 2 * opponentFlipped - 1) * FinalValueScale;
+        return FinalValue(board);
+    }
+
+    /// <summary>
+    /// 終局の値(手番から見た値。企画 P-11・P-12)。
+    /// 石数の差は、残った空きマスを勝った側の石として数える(公式の決まりと同じ。相手の石を全部取れば、いつでも64石差)。
+    /// 値 = 石数の差 × FinalValueScale +(勝ちなら +空きマス、負けなら −空きマス)。
+    /// 石数の差がいちばん大事で、差が同じなら、勝つときは早く終わる(空きマスが多く残る)ほど高く、負けるときは長引くほど高い。
+    /// 終局の局面だけで決まる値なので、どこから読んでも同じになり、置換表にもそのまま書ける
+    /// </summary>
+    private static int FinalValue(BitBoard board)
+    {
+        int player = board.PlayerCount;
+        int opponent = board.OpponentCount;
+        int empties = 64 - player - opponent;
+        if (player > opponent) return (player + empties - opponent) * FinalValueScale + empties;
+        if (player < opponent) return -(opponent + empties - player) * FinalValueScale - empties;
         return 0;
     }
 
     /// <summary>
-    /// ビットボード用評価関数（現プレイヤー視点）。内訳を detail に返す。
+    /// 空きマスが empties の局面から読んだ終局の値の上限(下限はこの −1 倍)。
+    /// 石数の差は64まで、終局の空きマスは今の空きマスまで(今が終局なら今の空きマスと同じ)
     /// </summary>
-    private int BitBoardEvaluate(BitBoard board, out EvalDetail detail)
+    private static int FinalValueBound(int empties) => 64 * FinalValueScale + empties;
+
+    /// <summary>
+    /// 小さな探索(SolveSmall)で、確定石の上限を使う空きマスの下限。これより少ない局面では、確定石を数える手間のほうが大きい。
+    /// 自己対局の残り20マス40局面で、使わない・2・4を比べ、4がいちばん速かった
+    /// </summary>
+    private const int SmallStabilityEmpties = 4;
+
+    /// <summary>
+    /// 確定石から見た、手番の終局の値の上限。相手の確定石が s 個なら、相手の石は終局で s 個以上残るので、
+    /// 石数の差(空きマスは勝った側に数える)は 64 − 2s 以下になる。
+    /// 勝ちなら終局の空きマスは今の空きマス以下なので、上限は (64 − 2s) × 64 + 空きマス。
+    /// 一方的な局面で、同じ値の手が並んで窓に余裕がなくなっても、「これより上はない」とすぐにわかり、読む局面が大きく減る
+    /// </summary>
+    private static int StabilityUpperBound(BitBoard board, int empties)
     {
-        int total = board.PlayerCount + board.OpponentCount;
-        detail = default;
-
-        if (total >= 54) // 終盤: 駒数差だけで勝敗を正確に判定する
-        {
-            detail.StoneDiff = board.PlayerCount - board.OpponentCount;
-            detail.DiffWeight = 1;
-            return detail.Total;
-        }
-        else if (total >= 20) // 中盤: バランス型。安定石・位置・機動力・駒数差を総合評価
-        {
-            detail.Position = PositionScore(board);
-            detail.Mobility = MobilityScore(board);
-            detail.Stability = StabilityScore(board);
-            detail.StoneDiff = board.PlayerCount - board.OpponentCount;
-            detail.Parity = board.EmptyCount % 2 == 1 ? 1 : -1;
-            detail.Frontier = FrontierScore(board);
-            detail.PotMob = PotentialMobilityScore(board);
-            detail.PosWeight = _weights.Mid.PosWeight;
-            detail.MobWeight = _weights.Mid.MobWeight;
-            detail.StaWeight = _weights.Mid.StaWeight;
-            detail.DiffWeight = _weights.Mid.DiffWeight;
-            detail.ParityWeight = _weights.Mid.ParityWeight;
-            detail.FrontierWeight = _weights.Mid.FrontierWeight;
-            detail.PotMobWeight = _weights.Mid.PotMobWeight;
-        }
-        else // 序盤: 位置と安定石を重視。序盤の駒数差は終盤で容易に逆転されるため無視
-        {
-            detail.Position = PositionScore(board);
-            detail.Mobility = MobilityScore(board);
-            detail.Stability = StabilityScore(board);
-            detail.StoneDiff = board.PlayerCount - board.OpponentCount;
-            detail.Parity = board.EmptyCount % 2 == 1 ? 1 : -1;
-            detail.Frontier = FrontierScore(board);
-            detail.PotMob = PotentialMobilityScore(board);
-            detail.PosWeight = _weights.Early.PosWeight;
-            detail.MobWeight = _weights.Early.MobWeight;
-            detail.StaWeight = _weights.Early.StaWeight;
-            detail.DiffWeight = _weights.Early.DiffWeight;
-            detail.ParityWeight = _weights.Early.ParityWeight;
-            detail.FrontierWeight = _weights.Early.FrontierWeight;
-            detail.PotMobWeight = _weights.Early.PotMobWeight;
-        }
-
-        return detail.Total;
+        int stable = BitOperations.PopCount(BitBoard.StableDiscs(board.Opponent, board.Player | board.Opponent));
+        int maxDiscDiff = 64 - 2 * stable;
+        // 差が0以下なら勝てないので、空きマスの分は足さない(負けの値は 差 × 64 − 空きマス ≤ 差 × 64)
+        return maxDiscDiff > 0 ? maxDiscDiff * FinalValueScale + empties : maxDiscDiff * FinalValueScale;
     }
 
-    private int PositionScore(BitBoard board)
+    /// <summary>終局の値を、石数の差(空きマスを勝った側に足したもの)と終局の空きマスに分ける(ログに出すため)</summary>
+    internal static (int discDiff, int emptiesLeft) SplitFinalValue(int value)
     {
-        int score = 0;
-        ulong p = board.Player;
-        ulong o = board.Opponent;
-        while (p != 0)
-        {
-            int pos = BitOperations.TrailingZeroCount(p);
-            score += _positionTable[pos];
-            p &= p - 1;
-        }
-        while (o != 0)
-        {
-            int pos = BitOperations.TrailingZeroCount(o);
-            score -= _positionTable[pos];
-            o &= o - 1;
-        }
-
-        // X-square動的補正: コーナーが埋まっていれば対応X-squareの重みを緩和（-250→+5）
-        // X-square: bit9(B2), bit14(G2), bit49(B7), bit54(G7)
-        // コーナー: bit0(A1), bit7(H1), bit56(A8), bit63(H8)
-        ulong all = board.Player | board.Opponent;
-        const int XSquareCorrection = 255; // -250 を +5 にする差分
-        ReadOnlySpan<(int xSq, int corner)> pairs = [(9, 0), (14, 7), (49, 56), (54, 63)];
-        foreach (var (xSq, corner) in pairs)
-        {
-            if (((all >> corner) & 1) == 1) // コーナーが埋まっている
-            {
-                if (((board.Player >> xSq) & 1) == 1) score += XSquareCorrection;
-                if (((board.Opponent >> xSq) & 1) == 1) score -= XSquareCorrection;
-            }
-        }
-
-        return score;
+        // 勝ちは「差 × 64 + 空きマス」、負けは「差 × 64 − 空きマス」(空きマスは64より少ない)なので、0に向かって切り捨てれば差になる
+        int discDiff = value / FinalValueScale;
+        return (discDiff, Math.Abs(value - discDiff * FinalValueScale));
     }
 
-    private static int MobilityScore(BitBoard board)
+    /// <summary>中盤の探索で終局に着いたときの点数。勝ち負けがわかった点数(WinScore)に、終局の値を足す</summary>
+    private static int FinalScore(BitBoard board)
     {
-        int myMoves = BitOperations.PopCount(board.GetMoves());
-        BitBoard swapped = new BitBoard(board.Opponent, board.Player);
-        int oppMoves = BitOperations.PopCount(swapped.GetMoves());
-        int total = myMoves + oppMoves;
-        return total == 0 ? 0 : 100 * (myMoves - oppMoves) / total;
+        int value = FinalValue(board);
+        if (value > 0) return WinScore + value;
+        if (value < 0) return -WinScore + value;
+        return 0;
     }
 
     /// <summary>
-    /// フロンティア評価: 空きマスに隣接する石（ひっくり返されやすい不安定石）を評価。
-    /// 自分のフロンティアが少ない＝有利。スコアは [-100, +100] の正規化値。
+    /// 開発用のコマンド(ベンチ・測定・確認)の引数から AI を作る。中盤の並べ替え用の評価(--ordering / --no-ordering)と
+    /// その調整(--ord-mid-depth・--ord-mobility)、MPC の上書き(--mpc / --no-mpc / --mpc-t)を読む
     /// </summary>
-    private static int FrontierScore(BitBoard board)
+    internal static OthelloAI CreateFromArgs(PatternEvaluator evaluator, string[] args, out string orderingDescription)
     {
-        ulong empty = ~(board.Player | board.Opponent);
-
-        // 空きマスを全8方向に1マス拡張し、石に隣接するマスを求める
-        const ulong NotAFile = 0xFEFEFEFEFEFEFEFEUL; // 左端列ラップ防止
-        const ulong NotHFile = 0x7F7F7F7F7F7F7F7FUL; // 右端列ラップ防止
-        ulong adj = 0UL;
-        adj |= empty << 8;               // 下
-        adj |= empty >> 8;               // 上
-        adj |= (empty & NotHFile) << 1;  // 右
-        adj |= (empty & NotAFile) >> 1;  // 左
-        adj |= (empty & NotHFile) << 9;  // 右下
-        adj |= (empty & NotAFile) << 7;  // 左下
-        adj |= (empty & NotHFile) >> 7;  // 右上
-        adj |= (empty & NotAFile) >> 9;  // 左上
-
-        int myFrontier = BitOperations.PopCount(adj & board.Player);
-        int oppFrontier = BitOperations.PopCount(adj & board.Opponent);
-        int total = myFrontier + oppFrontier;
-        // 自分のフロンティアが少ないほど正の値（有利）
-        return total == 0 ? 0 : 100 * (oppFrontier - myFrontier) / total;
-    }
-
-    /// <summary>
-    /// ポテンシャル機動力評価: 将来の合法手数の推定値。
-    /// 空きマスに隣接する相手の石（= 自分が将来打てる領域）と
-    /// 空きマスに隣接する自分の石（= 相手が将来打てる領域）の差を正規化した値。
-    /// 実際のGetMoves()より安価で、MobilityScoreの将来情報として補完的に機能する。
-    /// </summary>
-    private static int PotentialMobilityScore(BitBoard board)
-    {
-        ulong empty = ~(board.Player | board.Opponent);
-        const ulong NotAFile = 0xFEFEFEFEFEFEFEFEUL;
-        const ulong NotHFile = 0x7F7F7F7F7F7F7F7FUL;
-
-        // 自分の潜在機動力: 空きマスに隣接する相手の石の周辺の空きマス
-        ulong oppExp = 0UL;
-        ulong opp = board.Opponent;
-        oppExp |= opp << 8;
-        oppExp |= opp >> 8;
-        oppExp |= (opp & NotHFile) << 1;
-        oppExp |= (opp & NotAFile) >> 1;
-        oppExp |= (opp & NotHFile) << 9;
-        oppExp |= (opp & NotAFile) << 7;
-        oppExp |= (opp & NotHFile) >> 7;
-        oppExp |= (opp & NotAFile) >> 9;
-        int myPotential = BitOperations.PopCount(oppExp & empty);
-
-        // 相手の潜在機動力: 空きマスに隣接する自分の石の周辺の空きマス
-        ulong pExp = 0UL;
-        ulong p = board.Player;
-        pExp |= p << 8;
-        pExp |= p >> 8;
-        pExp |= (p & NotHFile) << 1;
-        pExp |= (p & NotAFile) >> 1;
-        pExp |= (p & NotHFile) << 9;
-        pExp |= (p & NotAFile) << 7;
-        pExp |= (p & NotHFile) >> 7;
-        pExp |= (p & NotAFile) >> 9;
-        int oppPotential = BitOperations.PopCount(pExp & empty);
-
-        int total = myPotential + oppPotential;
-        return total == 0 ? 0 : 100 * (myPotential - oppPotential) / total;
-    }
-
-    /// <summary>
-    /// 安定石評価：コーナーおよびコーナーから連続している安定石を評価。
-    /// 両プレイヤーを一度のスキャンで計算することで重複処理を排除。
-    /// </summary>
-    private static int StabilityScore(BitBoard board)
-    {
-        var (myStable, oppStable) = CountStableBoth(board.Player, board.Opponent);
-        return myStable - oppStable;
-    }
-
-    /// <summary>
-    /// 自分と相手の安定石数を一度のスキャンで同時に計算する。
-    /// コーナーを起点に水平・垂直方向へ連結している確定石を伝播で求める。
-    /// </summary>
-    private static (int myStable, int oppStable) CountStableBoth(ulong mine, ulong opp)
-    {
-        ulong stableMine = 0UL;
-        ulong stableOpp = 0UL;
-        ulong all = mine | opp;
-
-        // コーナー（確定的に安定）を起点にする
-        ulong corners = 0x8100000000000081UL;
-        stableMine |= corners & mine;
-        stableOpp |= corners & opp;
-
-        if (stableMine == 0 && stableOpp == 0) return (0, 0);
-
-        bool changed = true;
-        while (changed)
+        int IntArg(string name, int fallback)
         {
-            changed = false;
-            ulong newStableMine = stableMine;
-            ulong newStableOpp = stableOpp;
-
-            // 行方向（水平）の安定石伝播
-            for (int row = 0; row < 8; row++)
-            {
-                ulong rowMask = 0xFFUL << (row * 8);
-                ulong rowAll = all & rowMask;
-                ulong rowMine = mine & rowMask;
-                ulong rowOpp = opp & rowMask;
-                ulong rowStableM = stableMine & rowMask;
-                ulong rowStableO = stableOpp & rowMask;
-
-                if (rowAll == rowMask)
-                {
-                    // 行が全て埋まっている場合は全ての自石・相手石が安定
-                    newStableMine |= rowMine;
-                    newStableOpp |= rowOpp;
-                }
-                else
-                {
-                    // 既存の安定石から左右に連結伝播
-                    if (rowStableM != 0)
-                    {
-                        ulong lf = rowStableM;
-                        for (int i = 0; i < 7; i++) lf |= rowMine & ((lf << 1) & rowMask);
-                        ulong rf = rowStableM;
-                        for (int i = 0; i < 7; i++) rf |= rowMine & ((rf >> 1) & rowMask);
-                        newStableMine |= lf & rf;
-                    }
-                    if (rowStableO != 0)
-                    {
-                        ulong lf = rowStableO;
-                        for (int i = 0; i < 7; i++) lf |= rowOpp & ((lf << 1) & rowMask);
-                        ulong rf = rowStableO;
-                        for (int i = 0; i < 7; i++) rf |= rowOpp & ((rf >> 1) & rowMask);
-                        newStableOpp |= lf & rf;
-                    }
-                }
-            }
-
-            // 列方向（垂直）の安定石伝播
-            for (int col = 0; col < 8; col++)
-            {
-                ulong colMask = 0x0101010101010101UL << col;
-                ulong colAll = all & colMask;
-                ulong colMine = mine & colMask;
-                ulong colOpp = opp & colMask;
-                ulong colStableM = stableMine & colMask;
-                ulong colStableO = stableOpp & colMask;
-
-                if (colAll == colMask)
-                {
-                    newStableMine |= colMine;
-                    newStableOpp |= colOpp;
-                }
-                else
-                {
-                    if (colStableM != 0)
-                    {
-                        ulong uf = colStableM;
-                        for (int i = 0; i < 7; i++) uf |= colMine & ((uf << 8) & colMask);
-                        ulong df = colStableM;
-                        for (int i = 0; i < 7; i++) df |= colMine & ((df >> 8) & colMask);
-                        newStableMine |= uf & df;
-                    }
-                    if (colStableO != 0)
-                    {
-                        ulong uf = colStableO;
-                        for (int i = 0; i < 7; i++) uf |= colOpp & ((uf << 8) & colMask);
-                        ulong df = colStableO;
-                        for (int i = 0; i < 7; i++) df |= colOpp & ((df >> 8) & colMask);
-                        newStableOpp |= uf & df;
-                    }
-                }
-            }
-
-            // D1対角線（↘↖方向、shift±9）の安定石伝播
-            // D1上でlf(↘方向)とrf(↖方向)の両端に安定石があれば安定
-            const ulong NotAFile = 0xFEFEFEFEFEFEFEFEUL;
-            const ulong NotHFile = 0x7F7F7F7F7F7F7F7FUL;
-            for (int ki = 0; ki < 15; ki++)
-            {
-                ulong diagMask = s_diagD1Masks[ki];
-                ulong diagAll = all & diagMask;
-                ulong diagMine = mine & diagMask;
-                ulong diagOpp = opp & diagMask;
-                ulong diagStM = stableMine & diagMask;
-                ulong diagStO = stableOpp & diagMask;
-
-                if (diagAll == diagMask)
-                {
-                    newStableMine |= diagMine;
-                    newStableOpp |= diagOpp;
-                }
-                else
-                {
-                    if (diagStM != 0)
-                    {
-                        ulong lf = diagStM;
-                        for (int ii = 0; ii < 7; ii++) lf |= diagMine & ((lf & NotHFile) << 9); // ↘
-                        ulong rf = diagStM;
-                        for (int ii = 0; ii < 7; ii++) rf |= diagMine & ((rf & NotAFile) >> 9); // ↖
-                        newStableMine |= lf & rf;
-                    }
-                    if (diagStO != 0)
-                    {
-                        ulong lf = diagStO;
-                        for (int ii = 0; ii < 7; ii++) lf |= diagOpp & ((lf & NotHFile) << 9);
-                        ulong rf = diagStO;
-                        for (int ii = 0; ii < 7; ii++) rf |= diagOpp & ((rf & NotAFile) >> 9);
-                        newStableOpp |= lf & rf;
-                    }
-                }
-            }
-
-            // D2対角線（↙↗方向、shift±7）の安定石伝播
-            for (int ki = 0; ki < 15; ki++)
-            {
-                ulong diagMask = s_diagD2Masks[ki];
-                ulong diagAll = all & diagMask;
-                ulong diagMine = mine & diagMask;
-                ulong diagOpp = opp & diagMask;
-                ulong diagStM = stableMine & diagMask;
-                ulong diagStO = stableOpp & diagMask;
-
-                if (diagAll == diagMask)
-                {
-                    newStableMine |= diagMine;
-                    newStableOpp |= diagOpp;
-                }
-                else
-                {
-                    if (diagStM != 0)
-                    {
-                        ulong lf = diagStM;
-                        for (int ii = 0; ii < 7; ii++) lf |= diagMine & ((lf & NotAFile) << 7); // ↙
-                        ulong rf = diagStM;
-                        for (int ii = 0; ii < 7; ii++) rf |= diagMine & ((rf & NotHFile) >> 7); // ↗
-                        newStableMine |= lf & rf;
-                    }
-                    if (diagStO != 0)
-                    {
-                        ulong lf = diagStO;
-                        for (int ii = 0; ii < 7; ii++) lf |= diagOpp & ((lf & NotAFile) << 7);
-                        ulong rf = diagStO;
-                        for (int ii = 0; ii < 7; ii++) rf |= diagOpp & ((rf & NotHFile) >> 7);
-                        newStableOpp |= lf & rf;
-                    }
-                }
-            }
-
-            if (newStableMine != stableMine || newStableOpp != stableOpp)
-            {
-                stableMine = newStableMine;
-                stableOpp = newStableOpp;
-                changed = true;
-            }
+            int index = Array.IndexOf(args, name);
+            return index >= 0 && index + 1 < args.Length ? int.Parse(args[index + 1]) : fallback;
         }
-
-        return (BitOperations.PopCount(stableMine), BitOperations.PopCount(stableOpp));
+        OrderingEvaluator? ordering = OrderingEvaluator.LoadFromArgs(args, out orderingDescription);
+        var ai = new OthelloAI(evaluator)
+        {
+            Ordering = ordering,
+            MidgameOrderingDepth = IntArg("--ord-mid-depth", DefaultMidgameOrderingDepth),
+            MidgameOrderingMobilityWeight = IntArg("--ord-mobility", DefaultMidgameOrderingMobilityWeight),
+            MpcOverride = AiLevel.MpcOverrideFromArgs(args),
+            MpcSelectivityOverride = AiLevel.MpcSelectivityFromArgs(args),
+        };
+        if (ordering != null) orderingDescription += $"、深さ{ai.MidgameOrderingDepth}以上・相手の手1つ {ai.MidgameOrderingMobilityWeight}";
+        return ai;
     }
-}
 
-public enum AIStrength
-{
-    Beginner,
-    Normal,
-    Expert,
-    Professional
+    /// <summary>
+    /// 差分評価の確かめ(--verify-eval)。true なら、探索で評価するたびに盤面から作り直した値と比べ、違えば例外を投げる(とても遅くなる)
+    /// </summary>
+    public static bool VerifyIncrementalEval { get; set; }
+
+    /// <summary>探索の中の評価: 持ち歩いた番号から引く</summary>
+    private int Evaluate(BitBoard board, in EvalState state)
+    {
+        int value = _evaluator.Evaluate(state, board.EmptyCount);
+        if (VerifyIncrementalEval && value != _evaluator.Evaluate(board))
+            throw new InvalidOperationException($"差分評価の値 {value} が、盤面から作り直した値 {_evaluator.Evaluate(board)} と違います。");
+        return value;
+    }
+
+    /// <summary>裏返る石がわかっているときの、手を打ったあとの盤面(手番が入れ替わる。BitBoard.DoMove と同じ)</summary>
+    private static BitBoard DoMove(BitBoard board, int pos, ulong flipped)
+        => new(board.Opponent ^ flipped, board.Player | flipped | (1UL << pos));
+
+    /// <summary>
+    /// 完全読みの子の局面の番号。手の並べ替えに評価関数を使う残りマス(EvalOrderingEmpties 以上)のときだけ作る。
+    /// それより少ない局面では番号を使わないので、作らない(中身は不定)
+    /// </summary>
+    private static void PlayForSolve(in EvalState state, int pos, ulong flipped, int childEmpties, out EvalState child)
+    {
+        if (childEmpties >= EvalOrderingEmpties) PatternEvaluator.Play(state, pos, flipped, out child);
+        else Unsafe.SkipInit(out child);
+    }
+
+    /// <summary>評価関数だけを呼ぶ(探索の確認 SearchCheck で、同じ評価関数を使った単純な探索と比べるため)</summary>
+    internal int Evaluate(BitBoard board) => _evaluator.Evaluate(board);
 }

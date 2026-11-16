@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk.WebAssembly">
+
+  <!-- ブラウザ版(ふらるラボ)のAI。AIのコードは OthelloConsole/ のものをリンクして使い、ここには JS との入口だけを置く -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- 発行(publish)は AOT にする。インタプリタでは完全読みがデスクトップ版の約14倍遅く、レベル10以上で1手が最大36秒かかった。
+         AOT ではデスクトップ版とほぼ同じ速さ(レベル15で1手の最大4.2秒)。wasm-tools ワークロードが要る -->
+    <RunAOTCompilation Condition="'$(Configuration)' == 'Release'">true</RunAOTCompilation>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../OthelloConsole/OthelloAI.cs" Link="Shared/OthelloAI.cs" />
+    <Compile Include="../OthelloConsole/BitBoard.cs" Link="Shared/BitBoard.cs" />
+    <Compile Include="../OthelloConsole/TranspositionTable.cs" Link="Shared/TranspositionTable.cs" />
+    <Compile Include="../OthelloConsole/PatternEvaluator.cs" Link="Shared/PatternEvaluator.cs" />
+    <Compile Include="../OthelloConsole/OrderingEvaluator.cs" Link="Shared/OrderingEvaluator.cs" />
+    <Compile Include="../OthelloConsole/EvaluatorFile.cs" Link="Shared/EvaluatorFile.cs" />
+    <Compile Include="../OthelloConsole/MpcError.cs" Link="Shared/MpcError.cs" />
+    <Compile Include="../OthelloConsole/AiLevel.cs" Link="Shared/AiLevel.cs" />
+    <Compile Include="../OthelloConsole/OthelloDebugLog.cs" Link="Shared/OthelloDebugLog.cs" />
+    <Compile Include="../OthelloConsole/Data.cs" Link="Shared/Data.cs" />
+  </ItemGroup>
+
+</Project>

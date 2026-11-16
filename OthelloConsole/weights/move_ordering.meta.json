@@ -1,0 +1,19 @@
+{
+  "CreatedAt": "2026-11-16T13:55:05.4954720+09:00",
+  "Format": "OTMO v1",
+  "Stages": 15,
+  "Scale": 32,
+  "Data": [
+    "Egaroucid教師データ Egaroucid_Train_Data.zip: 学習用 25,003,815局面・検証用 510,282局面",
+    "WTHOR wthor: 5,149,215局面(残り24マス以上、24マス空きからの理論値)",
+    "展示の棋譜 game_records.jsonl: 7,777局面(最終の石数の差)"
+  ],
+  "Patterns": [
+    9,
+    10,
+    12,
+    15
+  ],
+  "Epochs": 30,
+  "ValidationError": 7.096
+}

@@ -11,7 +11,7 @@ public static class OthelloDebugLog
 {
     public static bool _isDebug = false;
     public static LogLevel CurrentLevel = LogLevel.Debug;
-    /// <summary>学習モード中はtrueにしてコンソール出力を全て抑制する</summary>
+    /// <summary>ベンチ・自己対戦・確認の間はtrueにして、コンソール出力を全て抑制する</summary>
     public static bool SuppressOutput = false;
 
     private static StreamWriter? sw;
@@ -82,18 +82,6 @@ public static class OthelloDebugLog
 
         Console.WriteLine($"[DEBUG] {message}");
         sw?.WriteLine($"[DEBUG] {message}");
-    }
-
-    /// <summary>
-    /// Detail: デバッグON かつ Detail レベル時のみ出力（大量ログ向け）
-    /// </summary>
-    public static void DetailLog(string message)
-    {
-        if (!_isDebug) return;
-        if (CurrentLevel != LogLevel.Detail) return;
-
-        Console.WriteLine($"[DETAIL] {message}");
-        sw?.WriteLine($"[DETAIL] {message}");
     }
 
     /// <summary>
