@@ -139,7 +139,17 @@ public sealed class OrderingEvaluator
     /// <summary>並べ替え用の評価ファイルを読む。形式や、評価関数のパターンの形が今と違えば例外を投げる</summary>
     public static OrderingEvaluator Load(string path)
     {
-        using var reader = new BinaryReader(File.OpenRead(path));
+        using FileStream stream = File.OpenRead(path);
+        return Load(stream, path);
+    }
+
+    /// <summary>
+    /// 並べ替え用の評価ファイルの中身をデータ(Stream)から読む(ブラウザ版のように、ファイルのパスがないときに使う)。
+    /// path はエラーの文に出す名前。stream は長さが分かるもの(MemoryStream・FileStream)にする
+    /// </summary>
+    public static OrderingEvaluator Load(Stream stream, string path)
+    {
+        using var reader = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
         if (!reader.ReadBytes(s_magic.Length).SequenceEqual(s_magic))
             throw new InvalidDataException($"{path} は並べ替え用の評価ファイル(OTMO)ではありません。");
         int version = reader.ReadInt32();

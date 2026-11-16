@@ -355,7 +355,17 @@ public sealed class PatternEvaluator
     /// </summary>
     public static PatternEvaluator Load(string path)
     {
-        using var reader = new BinaryReader(File.OpenRead(path));
+        using FileStream stream = File.OpenRead(path);
+        return Load(stream, path);
+    }
+
+    /// <summary>
+    /// 評価ファイルの中身をデータ(Stream)から読む(ブラウザ版のように、ファイルのパスがないときに使う)。
+    /// path はエラーの文に出す名前。stream は長さが分かるもの(MemoryStream・FileStream)にする
+    /// </summary>
+    public static PatternEvaluator Load(Stream stream, string path)
+    {
+        using var reader = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
         if (!reader.ReadBytes(s_magic.Length).SequenceEqual(s_magic))
             throw new InvalidDataException($"{path} は評価ファイル(OTPE)ではありません。");
         int version = reader.ReadInt32();
