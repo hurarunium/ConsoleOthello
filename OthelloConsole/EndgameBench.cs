@@ -11,6 +11,7 @@ using System.Diagnostics;
 ///     --force-solve  (レベルに関係なく完全読みする。完全読みに入る上限を見直すときに使う)
 ///     --transcript f5d6c3...  (棋譜を並べ直し、各局面で手を選ぶ時間を測る。ベンチで遅かった手を探すときに使う)
 ///     --only-move 41  (--transcript のうち、その手目の局面だけを測る)
+///     --show-log  (AIのログ〈反復深化の深さごとの局面の数など〉を止めずに出す。遅い手の原因を探すときに使う)
 ///     --mpc / --no-mpc  (中盤の探索で MPC を必ず使う / 使わない。どちらもなければレベルどおり)
 ///     --mpc-t 1.8  (MPC の余裕を変える。切り方を選ぶときに使う)
 /// </summary>
@@ -35,7 +36,7 @@ public static class EndgameBench
 
         OthelloAI ai = OthelloAI.CreateFromArgs(evaluator, args, out string orderingDescription);
         Console.WriteLine($"並べ替え用の評価: {orderingDescription}");
-        OthelloDebugLog.SuppressOutput = true;
+        OthelloDebugLog.SuppressOutput = !args.Contains("--show-log");
         try
         {
             string? transcript = ValueOf(args, "--transcript");

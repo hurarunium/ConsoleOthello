@@ -28,7 +28,9 @@ public struct TTEntry
 /// </summary>
 public class TranspositionTable
 {
-    private const int TableSizeBits = 22; // 約400万エントリ
+    // 約800万エントリ(1つ24バイトで約192MB)。約400万では、レベル15の中盤で1手に9,600万局面を読む局面があり、
+    // 置換表が埋まって1手が10秒近くかかった(約800万で4.4秒。約1,600万にしても縮まなかった)
+    private const int TableSizeBits = 23;
     private const int TableSize = 1 << TableSizeBits;
     private const int TableMask = TableSize - 1;
 

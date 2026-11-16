@@ -170,11 +170,13 @@ public class OthelloAI
                 score = NegaScout(board, rootState, depth, lo, hi, ref iterBest);
                 if (score <= lo)        // fail-low: 下限を広げて再探索
                 {
+                    InfoLog($"深さ {depth,2} 窓の下に外れた(値 {score} ≤ {lo}、ここまで ノード={_recursionsCount})。下限を広げて読み直す");
                     iterBest = -1;
                     score = NegaScout(board, rootState, depth, -Inf, hi, ref iterBest);
                 }
                 else if (score >= hi)   // fail-high: 上限を広げて再探索
                 {
+                    InfoLog($"深さ {depth,2} 窓の上に外れた(値 {score} ≥ {hi}、ここまで ノード={_recursionsCount})。上限を広げて読み直す");
                     iterBest = -1;
                     score = NegaScout(board, rootState, depth, lo, Inf, ref iterBest);
                 }
