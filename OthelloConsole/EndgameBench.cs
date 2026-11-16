@@ -11,6 +11,7 @@ using System.Diagnostics;
 ///     --force-solve  (レベルに関係なく完全読みする。完全読みに入る上限を見直すときに使う)
 ///     --transcript f5d6c3...  (棋譜を並べ直し、各局面で手を選ぶ時間を測る。ベンチで遅かった手を探すときに使う)
 ///     --only-move 41  (--transcript のうち、その手目の局面だけを測る)
+///     --lmr / --no-lmr  (中盤の探索で LMR を必ず使う / 使わない。どちらもなければレベルどおり)
 /// </summary>
 public static class EndgameBench
 {
@@ -21,14 +22,16 @@ public static class EndgameBench
         int positions = int.Parse(ValueOf(args, "--positions") ?? "30");
         int level = int.Parse(ValueOf(args, "--level") ?? AiLevel.Max.ToString());
         bool forceSolve = args.Contains("--force-solve");
+        bool? lmrOverride = AiLevel.LmrOverrideFromArgs(args);
+        bool useLmr = lmrOverride ?? AiLevel.UsesLmr(level);
 
         PatternEvaluator evaluator = EvaluatorFile.LoadFromArgs(args, out string description);
         Console.WriteLine($"評価関数: {description}");
         Console.WriteLine(forceSolve
             ? $"棋譜: {wthorPath}  すべて完全読み"
-            : $"棋譜: {wthorPath}  レベル{level}(残り{AiLevel.PerfectSolveEmpties(level)}マスから完全読み)");
+            : $"棋譜: {wthorPath}  レベル{level}(残り{AiLevel.PerfectSolveEmpties(level)}マスから完全読み)、LMR{(useLmr ? "あり" : "なし")}");
 
-        var ai = new OthelloAI(evaluator);
+        var ai = new OthelloAI(evaluator) { LmrOverride = lmrOverride };
         OthelloDebugLog.SuppressOutput = true;
         try
         {
@@ -86,6 +89,7 @@ public static class EndgameBench
         // 初期局面(黒の番): d5・e4 が黒、d4・e5 が白
         var board = new BitBoard((1UL << 28) | (1UL << 35), (1UL << 27) | (1UL << 36));
         bool blackToMove = true;
+        var times = new List<double>();
         for (int i = 0; i + 1 < transcript.Length; i += 2)
         {
             if (board.GetMoves() == 0)
@@ -112,9 +116,14 @@ public static class EndgameBench
             Console.WriteLine($"{i / 2 + 1,2}手目 {(blackToMove ? "黒" : "白")} 残り{board.EmptyCount,2}マス  {stopwatch.Elapsed.TotalMilliseconds,8:F0}ms  "
                             + $"局面数 {ai.LastNodeCount,12:N0}  選んだ手 {(char)('a' + c - 1)}{r}  棋譜の手 {transcript.Substring(i, 2)}");
 
+            times.Add(stopwatch.Elapsed.TotalMilliseconds);
+
             board = board.DoMove(move);
             blackToMove = !blackToMove;
         }
+        if (times.Count > 1)
+            Console.WriteLine($"合計: {times.Count}局面  平均 {times.Average():F0}ms  最大 {times.Max():F0}ms  "
+                            + $"10秒超え {times.Count(t => t > AiLevel.TargetThinkTime.TotalMilliseconds)}局面  合計 {times.Sum() / 1000:F1}秒");
     }
 
     private static string? ValueOf(string[] args, string name)
