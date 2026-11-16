@@ -234,6 +234,9 @@ function finishGame() {
 
 // --- はじめ ---
 
+// ふらるラボの一覧のプレビュー(iframe の中)では、盤面だけを見せる
+if (window.self !== window.top) document.documentElement.classList.add('embedded');
+
 for (let value = 1; value <= 15; value++) {
   const option = document.createElement('option');
   option.value = String(value);

@@ -136,6 +136,14 @@
     .layout { flex-direction: column; align-items: stretch; gap: 14px; }
     .board-area { width: 100%; }
   }
+
+  /* ふらるラボの一覧のプレビュー(iframe の中)では、設定を隠し、盤面だけを枠の中央に収める。
+     スマホの幅の指定より後ろに置き、そちらを上書きする */
+  .embedded body { padding: 0; height: 100vh; overflow: hidden; align-items: center; }
+  .embedded .panel { display: none; }
+  .embedded .layout { flex-direction: row; justify-content: center; }
+  .embedded .board-area { flex: none; width: min(100vw, 100vh); }
+  .embedded .board { border-radius: 0; }
 </style>
 </head>
 <body>
