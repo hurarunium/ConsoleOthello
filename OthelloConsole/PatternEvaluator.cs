@@ -5,7 +5,7 @@ using System.Text.Json;
 /// パターン評価(企画 P-02 の準備、設計書 Phase 5)。
 /// 盤面の部分(パターン)ごとに石の並びの点数を表で持ち、その合計を評価値にする。
 ///
-/// - パターンは11種類。盤の8通りの回転・反転で写した置き場所を、マスの組が重ならないように全部使う(1局面46か所)
+/// - パターンは16種類。盤の8通りの回転・反転で写した置き場所のうち、マスの組が違うものを全部使う(各4か所、1局面64か所)
 /// - 各マスは 空=0・手番の側=1・相手=2 の3通りで、並びを3進数の番号にして表を引く
 /// - 同じマスの組に写る回転・反転(例: 辺の左右反転)は、表の番号を「代表の番号」にまとめて引く。
 ///   こうすると、盤を回転・反転しても評価値が必ず同じになる
@@ -22,23 +22,31 @@ public sealed class PatternEvaluator
     /// <summary>評価値の倍率。表の値(16ビット整数)は「石数 × Scale」</summary>
     public const int Scale = 32;
 
-    /// <summary>パターン11種類の元の形(マスの番号 = 行 × 8 + 列。a1=0、h1=7、a8=56)</summary>
+    /// <summary>
+    /// パターン16種類の元の形(マスの番号 = 行 × 8 + 列。a1=0、h1=7、a8=56)。
+    /// ふらるが図で決めた形(library の resource ConsoleOthello-eval-patterns-16)。どれも盤の上に4か所ずつ置く
+    /// </summary>
     private static readonly int[][] s_basePatterns =
     {
-        Cells("a1 b1 c1 d1 e1 f1 g1 h1 b2 g2"), // 辺 + 2つのXマス
-        Cells("a1 b1 c1 a2 b2 c2 a3 b3 c3"),    // 角の3×3
-        Cells("a1 b1 c1 d1 e1 a2 b2 c2 d2 e2"), // 角の2×5
-        Cells("a2 b2 c2 d2 e2 f2 g2 h2"),       // 2列目
-        Cells("a3 b3 c3 d3 e3 f3 g3 h3"),       // 3列目
-        Cells("a4 b4 c4 d4 e4 f4 g4 h4"),       // 4列目
-        Cells("a1 b2 c3 d4 e5 f6 g7 h8"),       // 斜め(長さ8)
-        Cells("b1 c2 d3 e4 f5 g6 h7"),          // 斜め(長さ7)
-        Cells("c1 d2 e3 f4 g5 h6"),             // 斜め(長さ6)
-        Cells("d1 e2 f3 g4 h5"),                // 斜め(長さ5)
-        Cells("e1 f2 g3 h4"),                   // 斜め(長さ4)
+        Cells("a2 b2 c2 d2 e2 f2 g2 h2"),             //  1: 2列目
+        Cells("b1 c1 d2 g2 e3 f4 g5 h6 h7"),          //  2: 斜め6 + Cマス2つ + Xマス
+        Cells("a3 b3 c3 d3 e3 f3 g3 h3"),             //  3: 3列目
+        Cells("a1 b1 c2 d3 e4 f5 g6 h7 h8"),          //  4: 斜め7 + 角2つ
+        Cells("a4 b4 c4 d4 e4 f4 g4 h4"),             //  5: 4列目
+        Cells("a1 b1 c1 a2 b2 c2 a3 b3 c3"),          //  6: 角の3×3
+        Cells("d1 b2 e2 f3 g4 h5 g7"),                //  7: 斜め5 + Xマス2つ
+        Cells("a1 b1 a2 b2 c3 d4 e5 f6 g7 h8"),       //  8: 斜め8 + 角の2×2
+        Cells("a1 b1 c1 d1 e1 f1 g1 h1 b2 g2"),       //  9: 辺 + Xマス2つ
+        Cells("a1 b1 c1 d1 a2 b2 c2 a3 b3 a4"),       // 10: 角の三角
+        Cells("a1 c1 d1 e1 f1 h1 c2 d2 e2 f2"),       // 11: 辺の角と中央 + 2列目の中央
+        Cells("a1 b1 a2 b2 c2 b3 c3 d3 c4 d4"),       // 12: 角から斜めの帯
+        Cells("a1 b1 c1 d1 e1 f1 g1 h1 c2 f2"),       // 13: 辺 + 2列目の2マス
+        Cells("a1 b1 c1 d1 e1 a2 b2 a3 a4 a5"),       // 14: 角から2辺へ伸びる形
+        Cells("a1 b1 a2 b2 c2 d2 b3 c3 b4 d4"),       // 15: 角の不規則な形
+        Cells("c1 d1 e1 f1 d2 e2 c3 d3 e3 f3"),       // 16: 辺の中央の形
     };
 
-    /// <summary>パターンの種類ごとの、盤の上の置き場所(マスの番号の並び)。46か所</summary>
+    /// <summary>パターンの種類ごとの、盤の上の置き場所(マスの番号の並び)。64か所</summary>
     private static readonly (int pattern, int[] cells)[] s_instances;
     /// <summary>パターンの種類ごとの、表の番号 → 代表の番号</summary>
     private static readonly int[][] s_canonical;
@@ -160,7 +168,7 @@ public sealed class PatternEvaluator
     private static readonly int[] s_featureOffsets = Enumerable.Range(0, s_basePatterns.Length)
         .Select(p => Enumerable.Range(0, p).Sum(q => Pow3(s_basePatterns[q].Length))).ToArray();
 
-    /// <summary>局面の46か所それぞれの、つなげた表の上の番号(代表の番号)を書き込む。destination の長さは InstanceCount 以上</summary>
+    /// <summary>局面の64か所それぞれの、つなげた表の上の番号(代表の番号)を書き込む。destination の長さは InstanceCount 以上</summary>
     public static void WriteFeatureIndices(BitBoard board, Span<int> destination)
     {
         for (int i = 0; i < s_instances.Length; i++)

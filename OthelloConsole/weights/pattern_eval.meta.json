@@ -1,5 +1,5 @@
 {
-  "CreatedAt": "2026-11-15T23:35:38.4711870+09:00",
+  "CreatedAt": "2026-11-16T13:12:55.1923870+09:00",
   "Format": "OTPE v1",
   "Stages": 15,
   "Scale": 32,
@@ -9,5 +9,5 @@
     "展示の棋譜 game_records.jsonl: 7,777局面(最終の石数の差)"
   ],
   "Epochs": 30,
-  "ValidationError": 6.238
+  "ValidationError": 5.94
 }

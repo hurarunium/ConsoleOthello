@@ -3,12 +3,12 @@ using System.Diagnostics;
 /// <summary>
 /// パターン評価の学習(--train-pattern、企画 P-03、設計書 Phase 6)。
 ///
-/// 局面ごとに「46か所の表の値 + 段階の定数」の合計が、目標の値(手番から見た最終の石数の差)に近づくように、
+/// 局面ごとに「64か所の表の値 + 段階の定数」の合計が、目標の値(手番から見た最終の石数の差)に近づくように、
 /// 表の値を少しずつ動かす(確率的勾配降下法)。1局面ごとに
-///   誤差 = 目標の値 − 予測、 使われた46か所の値と段階の定数 += 学習率 × 誤差
+///   誤差 = 目標の値 − 予測、 使われた64か所の値と段階の定数 += 学習率 × 誤差
 /// だけ動かす。局面の順番は周回ごとに混ぜ、学習率は周回とともに小さくする。
 /// 段階(打った手の数を4手ごとに分けたもの)ごとに表が別なので、局面は自分の段階の表だけを動かし、段階ごとに別のスレッドで学習する。
-/// (全部の局面の誤差をまとめて一度に動かすやり方は、46か所が同じ向きに一斉に動いて発散したので使わない)
+/// (全部の局面の誤差をまとめて一度に動かすやり方は、64か所が同じ向きに一斉に動いて発散したので使わない)
 ///
 /// 例: --train-pattern --egaroucid ../external/egaroucid-data/Egaroucid_Train_Data.zip
 ///                     --wthor ../external/wthor --records Data/collected/game_records.jsonl
@@ -30,7 +30,7 @@ public static class PatternTrainer
         string outPath = ValueOf(args, "--out") ?? EvaluatorFile.DefaultOutputPath;
         int epochs = int.Parse(ValueOf(args, "--epochs") ?? "30");
         long limit = long.Parse(ValueOf(args, "--limit") ?? "0");
-        // 1局面の誤差を46か所で分け合うので、1か所あたりの歩幅は小さくする(46 × 学習率 が1より十分小さい値)
+        // 1局面の誤差を64か所で分け合うので、1か所あたりの歩幅は小さくする(64 × 学習率 が1より十分小さい値)
         float learningRate = float.Parse(ValueOf(args, "--learning-rate") ?? "0.002");
         if (egaroucidPath == null && wthorPath == null && recordsPath == null)
             throw new ArgumentException("--egaroucid・--wthor・--records の少なくとも1つで、教師データを指定してください。");

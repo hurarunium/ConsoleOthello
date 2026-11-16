@@ -36,8 +36,8 @@ public static class PatternCheck
 
     private static void CheckInstances()
     {
-        bool ok = PatternEvaluator.InstanceCount == 46;
-        Console.WriteLine($"[{(ok ? "OK" : "不具合あり")}] 置き場所: {PatternEvaluator.InstanceCount}か所(パターン{PatternEvaluator.PatternCount}種類。期待は46か所)");
+        bool ok = PatternEvaluator.InstanceCount == 64;
+        Console.WriteLine($"[{(ok ? "OK" : "不具合あり")}] 置き場所: {PatternEvaluator.InstanceCount}か所(パターン{PatternEvaluator.PatternCount}種類。期待は64か所)");
     }
 
     private static void CheckSymmetry(List<BitBoard> boards)
