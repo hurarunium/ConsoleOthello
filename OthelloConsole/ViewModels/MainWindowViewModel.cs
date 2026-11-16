@@ -37,7 +37,6 @@ public partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty] private string _passNotificationText = "";
 
     // ─── AI 戦績（PlayervsAI 累積） ─────────────────────────────
-    private const string RecordsPath = "data/battle_records.json";
     private enum GameResult { None, Win, Loss, Draw }
     private GameResult _lastGameResult = GameResult.None;
     [ObservableProperty] private int  _playerWins   = 0;
@@ -74,7 +73,7 @@ public partial class MainWindowViewModel : ViewModelBase
         // 中盤の並べ替え用の評価は、weights/move_ordering.bin があれば使う
         _ai = new OthelloAI(EvaluatorFile.Load(path: null, out _weightsSource)) { Ordering = OrderingEvaluator.LoadFromArgs([], out _) };
 
-        var record = BattleRecord.Load(RecordsPath);
+        var record = BattleRecord.Load(BattleRecord.FilePath);
         PlayerWins   = record.Wins;
         PlayerLosses = record.Losses;
         PlayerDraws  = record.Draws;
@@ -92,7 +91,7 @@ public partial class MainWindowViewModel : ViewModelBase
         }
         _lastGameResult   = GameResult.None;
         CanUndoLastResult = false;
-        new BattleRecord { Wins = PlayerWins, Losses = PlayerLosses, Draws = PlayerDraws }.Save(RecordsPath);
+        new BattleRecord { Wins = PlayerWins, Losses = PlayerLosses, Draws = PlayerDraws }.Save(BattleRecord.FilePath);
     }
 
     // ─── NewGame コマンド ────────────────────────────────────────
@@ -300,7 +299,7 @@ public partial class MainWindowViewModel : ViewModelBase
             else                            { PlayerDraws++;  _lastGameResult = GameResult.Draw; }
 
             new BattleRecord { Wins = PlayerWins, Losses = PlayerLosses, Draws = PlayerDraws }
-                .Save(RecordsPath);
+                .Save(BattleRecord.FilePath);
             CanUndoLastResult = true;
         }
 

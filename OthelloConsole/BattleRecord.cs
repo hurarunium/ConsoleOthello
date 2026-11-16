@@ -7,6 +7,9 @@ public class BattleRecord
     public int Losses { get; set; }
     public int Draws  { get; set; }
 
+    /// <summary>戦績のファイル。棋譜(GameRecord.FilePath)と同じく、起動のしかたに左右されないよう、exeと同じフォルダの data/ に置く。</summary>
+    public static string FilePath => Path.Combine(AppContext.BaseDirectory, "data", "battle_records.json");
+
     public void Save(string path)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
