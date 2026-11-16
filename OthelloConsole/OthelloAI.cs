@@ -10,9 +10,11 @@ public class OthelloAI
     /// <summary>評価関数(学習したパターン評価)</summary>
     private readonly PatternEvaluator _evaluator;
 
-    public OthelloAI(PatternEvaluator evaluator)
+    /// <param name="transpositionTableSizeBits">置換表の件数を 2 の何乗にするか(標準は約800万件。ブラウザ版は小さくする)</param>
+    public OthelloAI(PatternEvaluator evaluator, int transpositionTableSizeBits = TranspositionTable.DefaultSizeBits)
     {
         _evaluator = evaluator;
+        _tt = new TranspositionTable(transpositionTableSizeBits);
     }
 
     /// <summary>
@@ -50,7 +52,7 @@ public class OthelloAI
     // History Heuristic: 各マスのカットスコア（深さ²を加算、反復深化ごとに老化）
     private readonly int[] _historyTable = new int[64];
 
-    private readonly TranspositionTable _tt = new();
+    private readonly TranspositionTable _tt;
 
     // 完全読みに切り替える残り空きマス数。レベルから決める(AiLevel.PerfectSolveEmpties)
     private int _perfectSolveEmpties;

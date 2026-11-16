@@ -30,11 +30,19 @@ public class TranspositionTable
 {
     // 約800万エントリ(1つ24バイトで約192MB)。約400万では、レベル15の中盤で1手に9,600万局面を読む局面があり、
     // 置換表が埋まって1手が10秒近くかかった(約800万で4.4秒。約1,600万にしても縮まなかった)
-    private const int TableSizeBits = 23;
-    private const int TableSize = 1 << TableSizeBits;
-    private const int TableMask = TableSize - 1;
+    // ブラウザ版はメモリが少ないので、小さい表を選べるようにしている(sizeBits)
+    public const int DefaultSizeBits = 23;
 
-    private readonly TTEntry[] _table = new TTEntry[TableSize];
+    private readonly int _tableMask;
+    private readonly TTEntry[] _table;
+
+    /// <param name="sizeBits">表の件数を 2 の何乗にするか(標準 23 = 約800万件)</param>
+    public TranspositionTable(int sizeBits = DefaultSizeBits)
+    {
+        if (sizeBits < 10 || sizeBits > 26) throw new ArgumentOutOfRangeException(nameof(sizeBits), sizeBits, "置換表の大きさは 2^10〜2^26 件にしてください。");
+        _table = new TTEntry[1 << sizeBits];
+        _tableMask = (1 << sizeBits) - 1;
+    }
 
     // 統計カウンター
     public int HitCount { get; private set; }
@@ -70,7 +78,7 @@ public class TranspositionTable
     /// </summary>
     public bool TryGet(ulong hash, int depth, int alpha, int beta, out int score, out int bestMove)
     {
-        ref TTEntry entry = ref _table[hash & TableMask];
+        ref TTEntry entry = ref _table[hash & (ulong)_tableMask];
         score = 0;
         bestMove = entry.BestMove;
 
@@ -115,7 +123,7 @@ public class TranspositionTable
         else
             type = TTEntryType.Exact;
 
-        ref TTEntry entry = ref _table[hash & TableMask];
+        ref TTEntry entry = ref _table[hash & (ulong)_tableMask];
         // 深い探索結果を優先して上書き
         if (entry.Hash == 0 || entry.Depth <= depth)
         {
@@ -134,7 +142,7 @@ public class TranspositionTable
     /// </summary>
     public bool TryGetRaw(ulong hash, int minDepth, out TTEntryType type, out int score)
     {
-        ref TTEntry entry = ref _table[hash & TableMask];
+        ref TTEntry entry = ref _table[hash & (ulong)_tableMask];
         if (entry.Hash == hash && entry.Depth >= minDepth)
         {
             type  = entry.Type;
