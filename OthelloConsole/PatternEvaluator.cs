@@ -1,3 +1,7 @@
+using System.Numerics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 using System.Text;
 using System.Text.Json;
 
@@ -11,6 +15,8 @@ using System.Text.Json;
 ///   こうすると、盤を回転・反転しても評価値が必ず同じになる
 /// - ゲームの進み具合(打った手の数)で15段階に分け、段階ごとに別の表と、段階ごとの定数(Bias)を持つ
 /// - 評価値は「手番の側から見た最終の石数の差の見込み × Scale」(Scale=32 なら1石が32)
+/// - 表は、代表でない番号にも代表の値を入れて持つ。評価のときは番号で直接引ける(代表の番号に直す手間がいらない)
+/// - 探索では、64か所の番号を局面と一緒に持ち歩き(EvalState)、打った石と裏返した石の分だけ足し引きする(差分評価)
 /// </summary>
 public sealed class PatternEvaluator
 {
@@ -48,12 +54,22 @@ public sealed class PatternEvaluator
 
     /// <summary>パターンの種類ごとの、盤の上の置き場所(マスの番号の並び)。64か所</summary>
     private static readonly (int pattern, int[] cells)[] s_instances;
+    /// <summary>置き場所ごとの、1段階ぶんの表(パターンの種類の順につなげたもの)の上の先頭位置</summary>
+    private static readonly int[] s_instanceOffsets;
+    /// <summary>
+    /// 差分評価の重み。[マス × 64 + 置き場所] = そのマスが置き場所の何桁目か(3のべき乗)。マスを含まない置き場所は0。
+    /// マス1つ分の64個は、128ビットのベクトル8本(16ビット × 8個ずつ)で読む
+    /// </summary>
+    private static readonly ushort[] s_cellWeights;
     /// <summary>パターンの種類ごとの、表の番号 → 代表の番号</summary>
     private static readonly int[][] s_canonical;
     private static readonly int[] s_tableSizes;
 
-    /// <summary>[段階][パターンの種類][代表の番号] の点数(石数 × Scale)</summary>
-    private readonly short[][][] _tables;
+    /// <summary>
+    /// [段階][パターンの種類の先頭位置 + 番号] の点数(石数 × Scale)。1段階ぶんは、パターンの種類の順に表をつなげたもの。
+    /// 代表でない番号にも、代表の値が入っている
+    /// </summary>
+    private readonly short[][] _tables;
     /// <summary>[段階] の定数(石数 × Scale)</summary>
     private readonly short[] _bias;
 
@@ -88,9 +104,32 @@ public sealed class PatternEvaluator
             s_canonical[p] = BuildCanonicalMap(baseCells.Length, selfSymmetries);
         }
         s_instances = instances.ToArray();
+        if (s_instances.Length != InstanceSlots)
+            throw new InvalidOperationException($"置き場所が{s_instances.Length}か所です。差分評価は{InstanceSlots}か所の前提で作っています。");
+
+        s_instanceOffsets = new int[s_instances.Length];
+        s_cellWeights = new ushort[64 * InstanceSlots];
+        int offset = 0;
+        var patternOffsets = new int[s_basePatterns.Length];
+        for (int p = 0; p < s_basePatterns.Length; p++) { patternOffsets[p] = offset; offset += s_tableSizes[p]; }
+        for (int i = 0; i < s_instances.Length; i++)
+        {
+            (int pattern, int[] cells) = s_instances[i];
+            s_instanceOffsets[i] = patternOffsets[pattern];
+            // 先頭のマスがいちばん上の桁(IndexOf と同じ並び)
+            int weight = 1;
+            for (int k = cells.Length - 1; k >= 0; k--)
+            {
+                s_cellWeights[cells[k] * InstanceSlots + i] = (ushort)weight;
+                weight *= 3;
+            }
+        }
     }
 
-    private PatternEvaluator(short[][][] tables, short[] bias)
+    /// <summary>差分評価で持ち歩く番号の数(置き場所の数。16ビット × 64 = 128ビットのベクトル8本)</summary>
+    public const int InstanceSlots = 64;
+
+    private PatternEvaluator(short[][] tables, short[] bias)
     {
         _tables = tables;
         _bias = bias;
@@ -99,18 +138,14 @@ public sealed class PatternEvaluator
     /// <summary>すべての点数が0の評価関数(学習の出発点、動作の確認用)</summary>
     public static PatternEvaluator CreateZero()
     {
-        var tables = new short[StageCount][][];
-        for (int s = 0; s < StageCount; s++)
-        {
-            tables[s] = new short[s_basePatterns.Length][];
-            for (int p = 0; p < s_basePatterns.Length; p++) tables[s][p] = new short[s_tableSizes[p]];
-        }
+        var tables = new short[StageCount][];
+        for (int s = 0; s < StageCount; s++) tables[s] = new short[FeatureCountPerStage];
         return new PatternEvaluator(tables, new short[StageCount]);
     }
 
     /// <summary>
     /// 点数をランダムに入れた評価関数(対称性や保存・読み込みの確認用)。
-    /// 評価では代表の番号の値だけを引くので、どの番号に値を入れても対称性は壊れない
+    /// 評価では番号で直接引くので、代表でない番号には代表の値を入れる(入れないと対称性が壊れる)
     /// </summary>
     public static PatternEvaluator CreateRandom(int seed)
     {
@@ -120,28 +155,106 @@ public sealed class PatternEvaluator
         {
             evaluator._bias[s] = (short)random.Next(-64, 65);
             for (int p = 0; p < s_basePatterns.Length; p++)
-                for (int i = 0; i < s_tableSizes[p]; i++)
-                    evaluator._tables[s][p][i] = (short)random.Next(-200, 201);
+            {
+                Span<short> table = evaluator._tables[s].AsSpan(s_featureOffsets[p], s_tableSizes[p]);
+                // 代表の番号は、その番号以下の最小の番号なので、小さい順に埋めれば代表の値が先に決まっている
+                for (int i = 0; i < table.Length; i++)
+                {
+                    int representative = s_canonical[p][i];
+                    table[i] = representative == i ? (short)random.Next(-200, 201) : table[representative];
+                }
+            }
         }
         return evaluator;
     }
 
     /// <summary>打った手の数(60 − 空きマス)から段階を求める。4手ごとに1段階</summary>
-    public static int StageOf(BitBoard board) => Math.Min((60 - board.EmptyCount) / 4, StageCount - 1);
+    public static int StageOf(BitBoard board) => StageOfEmpties(board.EmptyCount);
 
-    /// <summary>手番の側(board.Player)から見た評価値(石数 × Scale)</summary>
+    /// <summary>空きマスの数から段階を求める</summary>
+    public static int StageOfEmpties(int empties) => Math.Min((60 - empties) / 4, StageCount - 1);
+
+    /// <summary>手番の側(board.Player)から見た評価値(石数 × Scale)。64か所の番号を盤面から作り直す</summary>
     public int Evaluate(BitBoard board)
     {
         int stage = StageOf(board);
-        short[][] tables = _tables[stage];
+        short[] table = _tables[stage];
         int score = _bias[stage];
-        foreach ((int pattern, int[] cells) in s_instances)
-        {
-            int index = IndexOf(board, cells);
-            score += tables[pattern][s_canonical[pattern][index]];
-        }
+        for (int i = 0; i < s_instances.Length; i++)
+            score += table[s_instanceOffsets[i] + IndexOf(board, s_instances[i].cells)];
         return score;
     }
+
+    // ─── 差分評価(探索から使う入り口) ──────────────────────────
+
+    /// <summary>盤面から、64か所の番号を手番の側・相手の側の両方から見て作る(探索の始まりで1回だけ使う)</summary>
+    public static EvalState CreateState(BitBoard board)
+    {
+        var swapped = new BitBoard(board.Opponent, board.Player);
+        EvalState state = default;
+        for (int i = 0; i < s_instances.Length; i++)
+        {
+            state.Player[i] = (ushort)IndexOf(board, s_instances[i].cells);
+            state.Opponent[i] = (ushort)IndexOf(swapped, s_instances[i].cells);
+        }
+        return state;
+    }
+
+    /// <summary>
+    /// 手番の側が pos に打ち、flipped の石を裏返したあとの番号を作る(手番が入れ替わる)。
+    /// 子の手番(= 親の相手)から見ると、打った石は相手の石(0 → 2)、裏返った石は自分 → 相手(1 → 2)。
+    /// 子の相手(= 親の手番)から見ると、打った石は自分の石(0 → 1)、裏返った石は相手 → 自分(2 → 1)。
+    /// なので、F = 裏返ったマスの重みの合計 として
+    ///   子.Player = 親.Opponent + 2 × 重み[pos] + F、 子.Opponent = 親.Player + 重み[pos] − F
+    /// 16ビットの足し引きは途中であふれても、答え(0〜59048)は正しくなる
+    /// </summary>
+    public static void Play(in EvalState parent, int pos, ulong flipped, out EvalState child)
+    {
+        Unsafe.SkipInit(out child);
+        ref ushort weights = ref MemoryMarshal.GetArrayDataReference(s_cellWeights);
+        ref ushort placed = ref Unsafe.Add(ref weights, pos * InstanceSlots);
+        ref ushort parentPlayer = ref Unsafe.AsRef(in parent.Player[0]);
+        ref ushort parentOpponent = ref Unsafe.AsRef(in parent.Opponent[0]);
+        ref ushort childPlayer = ref child.Player[0];
+        ref ushort childOpponent = ref child.Opponent[0];
+
+        for (nuint k = 0; k < InstanceSlots; k += (nuint)Vector128<ushort>.Count)
+        {
+            Vector128<ushort> sum = Vector128<ushort>.Zero;
+            for (ulong rest = flipped; rest != 0; rest &= rest - 1)
+            {
+                int cell = BitOperations.TrailingZeroCount(rest);
+                sum += Vector128.LoadUnsafe(ref Unsafe.Add(ref weights, cell * InstanceSlots), k);
+            }
+            Vector128<ushort> place = Vector128.LoadUnsafe(ref placed, k);
+            (Vector128.LoadUnsafe(ref parentOpponent, k) + place + place + sum).StoreUnsafe(ref childPlayer, k);
+            (Vector128.LoadUnsafe(ref parentPlayer, k) + place - sum).StoreUnsafe(ref childOpponent, k);
+        }
+    }
+
+    /// <summary>パスしたあとの番号(手番が入れ替わるだけ)</summary>
+    public static void Pass(in EvalState parent, out EvalState child)
+    {
+        child.Player = parent.Opponent;
+        child.Opponent = parent.Player;
+    }
+
+    /// <summary>持ち歩いた番号から、手番の側から見た評価値を求める(Evaluate(BitBoard) と同じ値)</summary>
+    public int Evaluate(in EvalState state, int empties)
+    {
+        int stage = StageOfEmpties(empties);
+        ref short table = ref MemoryMarshal.GetArrayDataReference(_tables[stage]);
+        ref int offsets = ref MemoryMarshal.GetArrayDataReference(s_instanceOffsets);
+        ref ushort indices = ref Unsafe.AsRef(in state.Player[0]);
+        int score = _bias[stage];
+        for (int i = 0; i < InstanceSlots; i++)
+            score += Unsafe.Add(ref table, Unsafe.Add(ref offsets, i) + Unsafe.Add(ref indices, i));
+        return score;
+    }
+
+    /// <summary>2つの番号の組が同じか(差分評価の確認用)</summary>
+    public static bool SameIndices(in EvalState a, in EvalState b)
+        => ((ReadOnlySpan<ushort>)a.Player).SequenceEqual(b.Player) && ((ReadOnlySpan<ushort>)a.Opponent).SequenceEqual(b.Opponent);
 
     /// <summary>置き場所の石の並びを3進数の番号にする(先頭のマスがいちばん上の桁)</summary>
     private static int IndexOf(BitBoard board, int[] cells)
@@ -191,8 +304,8 @@ public sealed class PatternEvaluator
             for (int p = 0; p < s_basePatterns.Length; p++)
             {
                 int offset = s_featureOffsets[p];
-                short[] table = evaluator._tables[s][p];
-                // 代表の番号でない場所も、代表の値で埋めておく(ファイルを読んだ人が、どの番号を引いても同じ値になるように)
+                Span<short> table = evaluator._tables[s].AsSpan(offset, s_tableSizes[p]);
+                // 代表の番号でない場所も、代表の値で埋めておく(評価のときは番号で直接引くため)
                 for (int i = 0; i < table.Length; i++) table[i] = ToShort(weights[s][offset + s_canonical[p][i]]);
             }
         }
@@ -223,9 +336,9 @@ public sealed class PatternEvaluator
             foreach (int cell in cells) writer.Write((byte)cell);
         }
         foreach (short bias in _bias) writer.Write(bias);
+        // 1段階ぶんの表は、パターンの種類の順につなげて持っているので、そのまま書けばファイルの並びになる
         for (int s = 0; s < StageCount; s++)
-            for (int p = 0; p < s_basePatterns.Length; p++)
-                foreach (short value in _tables[s][p]) writer.Write(value);
+            foreach (short value in _tables[s]) writer.Write(value);
     }
 
     /// <summary>
@@ -256,19 +369,28 @@ public sealed class PatternEvaluator
         PatternEvaluator evaluator = CreateZero();
         for (int s = 0; s < StageCount; s++) evaluator._bias[s] = reader.ReadInt16();
         for (int s = 0; s < StageCount; s++)
-            for (int p = 0; p < patternCount; p++)
-                for (int i = 0; i < s_tableSizes[p]; i++)
-                    evaluator._tables[s][p][i] = reader.ReadInt16();
+        {
+            short[] table = evaluator._tables[s];
+            for (int i = 0; i < table.Length; i++) table[i] = reader.ReadInt16();
+        }
         if (reader.BaseStream.Position != reader.BaseStream.Length)
             throw new InvalidDataException($"{path} の末尾に、読まれないデータが残っています。");
+        // 評価では番号で直接引くので、代表でない番号に代表と違う値が入っていると、盤を回転・反転したときに評価値が変わってしまう
+        for (int s = 0; s < StageCount; s++)
+            for (int p = 0; p < patternCount; p++)
+            {
+                ReadOnlySpan<short> table = evaluator._tables[s].AsSpan(s_featureOffsets[p], s_tableSizes[p]);
+                for (int i = 0; i < table.Length; i++)
+                    if (table[i] != table[s_canonical[p][i]])
+                        throw new InvalidDataException($"{path} の段階{s + 1}・パターン{p + 1}の番号{i}の値が、代表の番号{s_canonical[p][i]}の値と違います。");
+            }
         return evaluator;
     }
 
     /// <summary>2つの評価関数の点数がすべて同じか(保存と読み込みの確認用)</summary>
     public bool HasSameValues(PatternEvaluator other)
         => _bias.SequenceEqual(other._bias)
-        && Enumerable.Range(0, StageCount).All(s =>
-               Enumerable.Range(0, s_basePatterns.Length).All(p => _tables[s][p].SequenceEqual(other._tables[s][p])));
+        && Enumerable.Range(0, StageCount).All(s => _tables[s].AsSpan().SequenceEqual(other._tables[s]));
 
     // ─── 準備の計算 ─────────────────────────────────────────────
 
@@ -369,4 +491,21 @@ public sealed class PatternEvaluatorMeta
 
     public static PatternEvaluatorMeta? TryLoad(string path)
         => File.Exists(path) ? JsonSerializer.Deserialize<PatternEvaluatorMeta>(File.ReadAllText(path)) : null;
+}
+
+/// <summary>差分評価で持ち歩く、64か所の番号(16ビット × 64)</summary>
+[InlineArray(PatternEvaluator.InstanceSlots)]
+public struct PatternIndices
+{
+    private ushort _element0;
+}
+
+/// <summary>
+/// 差分評価で局面と一緒に持ち歩く番号(256バイト)。
+/// Player は手番の側から見た番号(手番 = 1、相手 = 2)、Opponent は相手の側から見た番号(相手 = 1、手番 = 2)
+/// </summary>
+public struct EvalState
+{
+    public PatternIndices Player;
+    public PatternIndices Opponent;
 }

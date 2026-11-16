@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Numerics;
 using static OthelloDebugLog;
 
@@ -144,6 +145,7 @@ public class OthelloAI
     {
         int bestMove = -1;
         int prevScore = 0; // Aspiration Window 用（前の深さのスコア）
+        EvalState rootState = PatternEvaluator.CreateState(board);
 
         for (int depth = 1; depth <= maxDepth; depth++)
         {
@@ -159,22 +161,22 @@ public class OthelloAI
             const int AspirationDelta = 50;
             if (depth <= 2)
             {
-                score = NegaScout(board, depth, -Inf, Inf, ref iterBest);
+                score = NegaScout(board, rootState, depth, -Inf, Inf, ref iterBest);
             }
             else
             {
                 int lo = prevScore - AspirationDelta;
                 int hi = prevScore + AspirationDelta;
-                score = NegaScout(board, depth, lo, hi, ref iterBest);
+                score = NegaScout(board, rootState, depth, lo, hi, ref iterBest);
                 if (score <= lo)        // fail-low: 下限を広げて再探索
                 {
                     iterBest = -1;
-                    score = NegaScout(board, depth, -Inf, hi, ref iterBest);
+                    score = NegaScout(board, rootState, depth, -Inf, hi, ref iterBest);
                 }
                 else if (score >= hi)   // fail-high: 上限を広げて再探索
                 {
                     iterBest = -1;
-                    score = NegaScout(board, depth, lo, Inf, ref iterBest);
+                    score = NegaScout(board, rootState, depth, lo, Inf, ref iterBest);
                 }
             }
             prevScore = score;
@@ -191,7 +193,7 @@ public class OthelloAI
     /// PVS（NegaScout）探索。置換表・完全読みを統合。
     /// board.Player = 現在の手番プレイヤーの石。
     /// </summary>
-    private int NegaScout(BitBoard board, int depth, int alpha, int beta, ref int bestMove)
+    private int NegaScout(BitBoard board, in EvalState state, int depth, int alpha, int beta, ref int bestMove)
     {
         ulong hash = _tt.ComputeHash(board);
         // 置換表に書く値の種類(上限・下限・正確)は、探索を始める前のαで決める。ループ中に更新したαで決めると、βカットの値が「上限」として書かれてしまう
@@ -209,7 +211,7 @@ public class OthelloAI
         if (depth <= 0)
         {
             _recursionsCount++;
-            int eval = _evaluator.Evaluate(board);
+            int eval = Evaluate(board, state);
             _tt.Store(hash, 0, eval, alpha, beta, -1);
             return eval;
         }
@@ -227,14 +229,15 @@ public class OthelloAI
                 return finalScore;
             }
             _recursionsCount++;
-            int passScore = -NegaScout(new BitBoard(board.Opponent, board.Player), depth - 1, -beta, -alpha, ref bestMove);
+            PatternEvaluator.Pass(state, out EvalState passedState);
+            int passScore = -NegaScout(passed, passedState, depth - 1, -beta, -alpha, ref bestMove);
             _tt.Store(hash, depth, passScore, alpha, beta, -1);
             return passScore;
         }
 
         // MPC: 浅い読みの値から、深い読みが窓の外になると見込めるなら、読まずに切る(ルートでは使わない)
         if (_useMpc && !_inMpcProbe && depth >= MpcMinDepth && depth < _iterationDepth
-            && TryMultiProbCut(board, depth, alpha, beta, out int mpcScore))
+            && TryMultiProbCut(board, state, depth, alpha, beta, out int mpcScore))
         {
             _mpcCutCount++;
             return mpcScore;
@@ -308,7 +311,9 @@ public class OthelloAI
         for (int i = 0; i < moveCount; i++)
         {
             int move = moves[i];
-            BitBoard next = board.DoMove(move);
+            ulong flipped = board.GetFlipped(move);
+            BitBoard next = DoMove(board, move, flipped);
+            PatternEvaluator.Play(state, move, flipped, out EvalState nextState);
             _recursionsCount++;
 
             int score;
@@ -316,19 +321,19 @@ public class OthelloAI
             {
                 // PV手はフルウィンドウで探索
                 int dummy = -1;
-                score = -NegaScout(next, depth - 1, -beta, -alpha, ref dummy);
+                score = -NegaScout(next, nextState, depth - 1, -beta, -alpha, ref dummy);
             }
             else
             {
                 // 2手目以降は Null Window で「αより良いか」だけを確かめる
                 int dummy = -1;
-                score = -NegaScout(next, depth - 1, -alpha - 1, -alpha, ref dummy);
+                score = -NegaScout(next, nextState, depth - 1, -alpha - 1, -alpha, ref dummy);
 
                 // PVS再探索: Null Window を超えた場合のみ（この手が PV 候補）
                 if (score > alpha && score < beta)
                 {
                     _pvsResearchCount++;
-                    score = -NegaScout(next, depth - 1, -beta, -alpha, ref dummy);
+                    score = -NegaScout(next, nextState, depth - 1, -beta, -alpha, ref dummy);
                 }
             }
 
@@ -375,7 +380,7 @@ public class OthelloAI
     /// MPC を試す。切れたら true で、score に窓の端(β か α)を返す。
     /// 静的な評価値がすでに窓の外にあるときだけ、浅い読みを試す(浅い読みの無駄を減らすため)
     /// </summary>
-    private bool TryMultiProbCut(BitBoard board, int depth, int alpha, int beta, out int score)
+    private bool TryMultiProbCut(BitBoard board, in EvalState state, int depth, int alpha, int beta, out int score)
     {
         score = 0;
         int shallow = MpcShallowDepth(depth);
@@ -383,7 +388,7 @@ public class OthelloAI
         // 値は評価値の単位(石数 × Scale)
         int margin = (int)Math.Ceiling(_mpcSelectivity * sigmaDiscs * PatternEvaluator.Scale);
         int shift = (int)Math.Round(meanDiscs * PatternEvaluator.Scale);
-        int eval = _evaluator.Evaluate(board);
+        int eval = Evaluate(board, state);
         int dummy = -1;
 
         // 深い読み ≈ 浅い読み + shift。深い読み ≥ β と見込めるのは、浅い読み ≥ β − shift + margin のとき
@@ -391,7 +396,7 @@ public class OthelloAI
         {
             int probeBeta = beta - shift + margin;
             _inMpcProbe = true;
-            int value = NegaScout(board, shallow, probeBeta - 1, probeBeta, ref dummy);
+            int value = NegaScout(board, state, shallow, probeBeta - 1, probeBeta, ref dummy);
             _inMpcProbe = false;
             if (value >= probeBeta) { score = beta; return true; }
         }
@@ -399,7 +404,7 @@ public class OthelloAI
         {
             int probeAlpha = alpha - shift - margin;
             _inMpcProbe = true;
-            int value = NegaScout(board, shallow, probeAlpha, probeAlpha + 1, ref dummy);
+            int value = NegaScout(board, state, shallow, probeAlpha, probeAlpha + 1, ref dummy);
             _inMpcProbe = false;
             if (value <= probeAlpha) { score = alpha; return true; }
         }
@@ -417,6 +422,7 @@ public class OthelloAI
     /// <summary>空きマスがこの数以上の局面では、評価関数も使って手を並べる(未満は相手の打てる手の数だけで並べる)</summary>
     private const int EvalOrderingEmpties = 12;
 
+
     // 盤面を4つに分けたマスク(偶数理論: 空きマスが奇数個の区画から先に打つ)
     private const ulong QuadrantTopLeft = 0x0000_0000_0F0F_0F0FUL;
     private const ulong QuadrantTopRight = 0x0000_0000_F0F0_F0F0UL;
@@ -431,24 +437,27 @@ public class OthelloAI
 
         // ルートは自分で手を並べて読み、最善手を確実に手元に残す
         Span<int> moves = stackalloc int[64];
-        int moveCount = OrderSolveMoves(board, board.GetMoves(), -1, moves);
+        EvalState rootState = PatternEvaluator.CreateState(board);
+        int moveCount = OrderSolveMoves(board, rootState, board.GetMoves(), -1, moves);
 
         int alpha = -65, beta = 65;
         int bestMove = moves[0];
         int bestScore = -65;
         for (int i = 0; i < moveCount; i++)
         {
-            BitBoard next = board.DoMove(moves[i]);
+            ulong flipped = board.GetFlipped(moves[i]);
+            BitBoard next = DoMove(board, moves[i], flipped);
+            PlayForSolve(rootState, moves[i], flipped, next.EmptyCount, out EvalState nextState);
             _recursionsCount++;
             int score;
             if (i == 0)
             {
-                score = -Solve(next, -beta, -alpha);
+                score = -Solve(next, nextState, -beta, -alpha);
             }
             else
             {
-                score = -Solve(next, -alpha - 1, -alpha);
-                if (score > alpha) score = -Solve(next, -beta, -alpha);
+                score = -Solve(next, nextState, -alpha - 1, -alpha);
+                if (score > alpha) score = -Solve(next, nextState, -beta, -alpha);
             }
             if (score > bestScore) { bestScore = score; bestMove = moves[i]; }
             alpha = Math.Max(alpha, score);
@@ -460,8 +469,11 @@ public class OthelloAI
         return bestMove;
     }
 
-    /// <summary>完全読み(置換表・ETC・手の並べ替えつきの NegaScout)。値は手番から見た最終の石数の差</summary>
-    private int Solve(BitBoard board, int alpha, int beta)
+    /// <summary>
+    /// 完全読み(置換表・ETC・手の並べ替えつきの NegaScout)。値は手番から見た最終の石数の差。
+    /// state(差分評価の番号)は、手の並べ替えに評価関数を使う残り EvalOrderingEmpties マス以上の局面でだけ正しい値が入っている
+    /// </summary>
+    private int Solve(BitBoard board, in EvalState state, int alpha, int beta)
     {
         // 値は -64〜64 にしかならないので、窓をその範囲に絞る(64勝ちが見つかったら、ほかの手を読まずに済む)
         if (beta > MaxDiscDiff) beta = MaxDiscDiff;
@@ -490,11 +502,12 @@ public class OthelloAI
             var passed = new BitBoard(board.Opponent, board.Player);
             if (passed.GetMoves() == 0) return FinalDiscDiff(board);
             _recursionsCount++;
-            return -Solve(passed, -beta, -alpha);
+            PatternEvaluator.Pass(state, out EvalState passedState);
+            return -Solve(passed, passedState, -beta, -alpha);
         }
 
         Span<int> moves = stackalloc int[64];
-        int moveCount = OrderSolveMoves(board, movesBit, ttBestMove, moves);
+        int moveCount = OrderSolveMoves(board, state, movesBit, ttBestMove, moves);
 
         // ETC(Enhanced Transposition Cutoff): 子の局面の置換表に「上限 S ≤ -β」があれば、親は β 以上で切れる
         for (int i = 0; i < moveCount; i++)
@@ -513,21 +526,23 @@ public class OthelloAI
         int localBestMove = moves[0];
         for (int i = 0; i < moveCount; i++)
         {
-            BitBoard next = board.DoMove(moves[i]);
+            ulong flipped = board.GetFlipped(moves[i]);
+            BitBoard next = DoMove(board, moves[i], flipped);
+            PlayForSolve(state, moves[i], flipped, empties - 1, out EvalState nextState);
             _recursionsCount++;
 
             int score;
             if (i == 0)
             {
-                score = -Solve(next, -beta, -alpha);
+                score = -Solve(next, nextState, -beta, -alpha);
             }
             else
             {
-                score = -Solve(next, -alpha - 1, -alpha);
+                score = -Solve(next, nextState, -alpha - 1, -alpha);
                 if (score > alpha && score < beta)
                 {
                     _pvsResearchCount++;
-                    score = -Solve(next, -beta, -alpha);
+                    score = -Solve(next, nextState, -beta, -alpha);
                 }
             }
 
@@ -553,7 +568,7 @@ public class OthelloAI
     /// 置換表の最善手を先頭にし、残りは「相手の打てる手が少ない手」を先にする(速さ優先)。
     /// 空きマスが多い局面では、評価関数(相手から見た値。小さいほど自分に良い)も足す。残り16マス以上では2手読みの値を使う
     /// </summary>
-    private int OrderSolveMoves(BitBoard board, ulong movesBit, int ttBestMove, Span<int> moves)
+    private int OrderSolveMoves(BitBoard board, in EvalState state, ulong movesBit, int ttBestMove, Span<int> moves)
     {
         Span<int> keys = stackalloc int[64];
         bool useEval = board.EmptyCount >= EvalOrderingEmpties;
@@ -570,15 +585,17 @@ public class OthelloAI
             }
             else
             {
-                BitBoard next = board.DoMove(move);
+                ulong flipped = board.GetFlipped(move);
+                BitBoard next = DoMove(board, move, flipped);
                 // 相手の打てる手の数(角は2倍に数える)。値が小さいほど先に読む
                 ulong opponentMoves = next.GetMoves();
                 key = (BitOperations.PopCount(opponentMoves) + BitOperations.PopCount(opponentMoves & CornerMask)) * OrderingMobilityWeight;
                 if (useEval)
                 {
+                    PatternEvaluator.Play(state, move, flipped, out EvalState nextState);
                     key += board.EmptyCount >= ShallowSearchOrderingEmpties
-                        ? OrderingSearch(next, 1, -Inf, Inf)
-                        : _evaluator.Evaluate(next);
+                        ? OrderingSearch(next, nextState, 1, -Inf, Inf)
+                        : Evaluate(next, nextState);
                 }
             }
 
@@ -604,23 +621,26 @@ public class OthelloAI
     /// <summary>空きマスがこの数以上の局面では、2手読み(子の局面から1手読み)の値で手を並べる</summary>
     private const int ShallowSearchOrderingEmpties = 16;
 
-    /// <summary>手の並べ替えに使う浅い探索(評価関数のαβ。置換表は使わない)。値は手番から見た評価値</summary>
-    private int OrderingSearch(BitBoard board, int depth, int alpha, int beta)
+    /// <summary>手の並べ替えに使う浅い探索(評価のαβ。置換表は使わない)。値は手番から見た評価値</summary>
+    private int OrderingSearch(BitBoard board, in EvalState state, int depth, int alpha, int beta)
     {
-        if (depth <= 0) return _evaluator.Evaluate(board);
+        if (depth <= 0) return Evaluate(board, state);
         ulong movesBit = board.GetMoves();
         if (movesBit == 0)
         {
             var passed = new BitBoard(board.Opponent, board.Player);
             if (passed.GetMoves() == 0) return FinalScore(board);
-            return -OrderingSearch(passed, depth - 1, -beta, -alpha);
+            PatternEvaluator.Pass(state, out EvalState passedState);
+            return -OrderingSearch(passed, passedState, depth - 1, -beta, -alpha);
         }
         int best = -Inf;
         while (movesBit != 0)
         {
             int move = BitOperations.TrailingZeroCount(movesBit);
             movesBit &= movesBit - 1;
-            int score = -OrderingSearch(board.DoMove(move), depth - 1, -beta, -alpha);
+            ulong flipped = board.GetFlipped(move);
+            PatternEvaluator.Play(state, move, flipped, out EvalState nextState);
+            int score = -OrderingSearch(DoMove(board, move, flipped), nextState, depth - 1, -beta, -alpha);
             if (score > best)
             {
                 best = score;
@@ -715,6 +735,34 @@ public class OthelloAI
         if (p > o) return WinScore + (p - o);
         if (p < o) return -WinScore - (o - p);
         return 0;
+    }
+
+    /// <summary>
+    /// 差分評価の確かめ(--verify-eval)。true なら、探索で評価するたびに盤面から作り直した値と比べ、違えば例外を投げる(とても遅くなる)
+    /// </summary>
+    public static bool VerifyIncrementalEval { get; set; }
+
+    /// <summary>探索の中の評価: 持ち歩いた番号から引く</summary>
+    private int Evaluate(BitBoard board, in EvalState state)
+    {
+        int value = _evaluator.Evaluate(state, board.EmptyCount);
+        if (VerifyIncrementalEval && value != _evaluator.Evaluate(board))
+            throw new InvalidOperationException($"差分評価の値 {value} が、盤面から作り直した値 {_evaluator.Evaluate(board)} と違います。");
+        return value;
+    }
+
+    /// <summary>裏返る石がわかっているときの、手を打ったあとの盤面(手番が入れ替わる。BitBoard.DoMove と同じ)</summary>
+    private static BitBoard DoMove(BitBoard board, int pos, ulong flipped)
+        => new(board.Opponent ^ flipped, board.Player | flipped | (1UL << pos));
+
+    /// <summary>
+    /// 完全読みの子の局面の番号。手の並べ替えに評価関数を使う残りマス(EvalOrderingEmpties 以上)のときだけ作る。
+    /// それより少ない局面では番号を使わないので、作らない(中身は不定)
+    /// </summary>
+    private static void PlayForSolve(in EvalState state, int pos, ulong flipped, int childEmpties, out EvalState child)
+    {
+        if (childEmpties >= EvalOrderingEmpties) PatternEvaluator.Play(state, pos, flipped, out child);
+        else Unsafe.SkipInit(out child);
     }
 
     /// <summary>評価関数だけを呼ぶ(探索の確認 SearchCheck で、同じ評価関数を使った単純な探索と比べるため)</summary>

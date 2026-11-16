@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Diagnostics;
 using static OthelloSystem;
 
@@ -6,6 +7,7 @@ using static OthelloSystem;
 /// - 置き場所の数
 /// - 対称性: 盤を8通りに回転・反転しても評価値が同じか(点数はランダムに入れて確かめる)
 /// - 保存と読み込み: 書いたファイルを読み込むと同じ値に戻るか。違うファイルは読み込みで止まるか
+/// - 差分評価: ランダムな対局を最後まで打ち、パスを含む毎手で、持ち歩いた番号と評価値が、盤面から作り直したものと同じか
 /// - 速さ: 1秒あたりの評価の回数と、探索で1秒あたりに読む局面の数(学習した評価ファイル。なければランダムな点数)
 /// パターン評価の形を変えたら、毎回これを通す。
 ///
@@ -25,12 +27,14 @@ public static class PatternCheck
         CheckInstances();
         CheckSymmetry(boards);
         CheckSaveAndLoad(boards);
+        CheckIncremental(games: 2000, seed: 33);
         // 速さは、学習した評価ファイルで測る(まだなければ、ランダムな点数で測る)
         bool useFile = args.Contains("--weights") || File.Exists(EvaluatorFile.FindDefaultPath());
         string description = "ランダムな点数";
         PatternEvaluator measured = useFile ? EvaluatorFile.LoadFromArgs(args, out description) : PatternEvaluator.CreateRandom(seed: 5);
         Console.WriteLine($"速さを測る評価関数: {description}");
         CheckSpeed(boards, measured);
+        CheckIncrementalSpeed(boards, measured);
         CheckSearchSpeed(boards, measured);
     }
 
@@ -85,6 +89,50 @@ public static class PatternCheck
         }
     }
 
+    /// <summary>
+    /// 差分評価の確認: ビットボードだけでランダムな対局を最後まで打ち、毎手(パスを含む)、
+    /// 打つ前の番号から Play / Pass で作った番号と評価値が、盤面から作り直したもの(CreateState・Evaluate(BitBoard))と同じかを比べる
+    /// </summary>
+    private static void CheckIncremental(int games, int seed)
+    {
+        PatternEvaluator evaluator = PatternEvaluator.CreateRandom(seed: 5);
+        var random = new Random(seed);
+        long steps = 0, indexMismatches = 0, valueMismatches = 0;
+        for (int g = 0; g < games; g++)
+        {
+            var board = new BitBoard(0x0000_0008_1000_0000UL, 0x0000_0010_0800_0000UL);
+            EvalState state = PatternEvaluator.CreateState(board);
+            while (true)
+            {
+                ulong moves = board.GetMoves();
+                EvalState next;
+                if (moves == 0)
+                {
+                    var passed = new BitBoard(board.Opponent, board.Player);
+                    if (passed.GetMoves() == 0) break;
+                    PatternEvaluator.Pass(state, out next);
+                    board = passed;
+                }
+                else
+                {
+                    int count = BitOperations.PopCount(moves);
+                    int pick = random.Next(count);
+                    for (int i = 0; i < pick; i++) moves &= moves - 1;
+                    int pos = BitOperations.TrailingZeroCount(moves);
+                    ulong flipped = board.GetFlipped(pos);
+                    PatternEvaluator.Play(state, pos, flipped, out next);
+                    board = board.DoMove(pos);
+                }
+                state = next;
+                steps++;
+                if (!PatternEvaluator.SameIndices(state, PatternEvaluator.CreateState(board))) indexMismatches++;
+                if (evaluator.Evaluate(state, board.EmptyCount) != evaluator.Evaluate(board)) valueMismatches++;
+            }
+        }
+        bool ok = indexMismatches == 0 && valueMismatches == 0;
+        Console.WriteLine($"[{(ok ? "OK" : "不具合あり")}] 差分評価: {games}局・{steps:N0}手のうち、番号が違った手 {indexMismatches}、評価値が違った手 {valueMismatches}");
+    }
+
     private static void CheckSpeed(List<BitBoard> boards, PatternEvaluator evaluator)
     {
         const int Rounds = 200;
@@ -93,6 +141,42 @@ public static class PatternCheck
         for (int r = 0; r < Rounds; r++) foreach (BitBoard board in boards) checksum += evaluator.Evaluate(board);
         double rate = Rounds * boards.Count / stopwatch.Elapsed.TotalSeconds;
         Console.WriteLine($"[参考] 評価の速さ: {rate / 1e6:F2}百万回/秒{(checksum == long.MinValue ? "" : "")}");
+    }
+
+    /// <summary>
+    /// 差分評価の速さ: 各局面の合法手それぞれについて「番号を更新して評価する」回数を数える(探索の葉の手間に近い)。
+    /// 比べるために、同じ子の局面を盤面から評価する(Evaluate(BitBoard))速さも出す
+    /// </summary>
+    private static void CheckIncrementalSpeed(List<BitBoard> boards, PatternEvaluator evaluator)
+    {
+        var parents = boards.Where(b => b.GetMoves() != 0).ToList();
+        var states = parents.Select(PatternEvaluator.CreateState).ToArray();
+        const int Rounds = 50;
+        long checksum = 0, count = 0;
+        var stopwatch = Stopwatch.StartNew();
+        for (int r = 0; r < Rounds; r++)
+            for (int b = 0; b < parents.Count; b++)
+            {
+                BitBoard board = parents[b];
+                for (ulong moves = board.GetMoves(); moves != 0; moves &= moves - 1)
+                {
+                    int pos = BitOperations.TrailingZeroCount(moves);
+                    ulong flipped = board.GetFlipped(pos);
+                    PatternEvaluator.Play(states[b], pos, flipped, out EvalState child);
+                    checksum += evaluator.Evaluate(child, board.EmptyCount - 1);
+                    count++;
+                }
+            }
+        double incremental = count / stopwatch.Elapsed.TotalSeconds;
+
+        stopwatch.Restart();
+        for (int r = 0; r < Rounds; r++)
+            foreach (BitBoard board in parents)
+                for (ulong moves = board.GetMoves(); moves != 0; moves &= moves - 1)
+                    checksum -= evaluator.Evaluate(board.DoMove(BitOperations.TrailingZeroCount(moves)));
+        double full = count / stopwatch.Elapsed.TotalSeconds;
+        Console.WriteLine($"[参考] 子の局面の評価の速さ: 差分評価 {incremental / 1e6:F2}百万回/秒、盤面から作り直す {full / 1e6:F2}百万回/秒"
+            + (checksum == 0 ? "" : "(差分評価と作り直しの値の合計が違う)"));
     }
 
     /// <summary>探索の速さ: 中盤の局面をレベル8で読ませ、1秒あたりに読んだ局面の数と、1手の平均の時間を出す</summary>
