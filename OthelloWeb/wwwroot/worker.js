@@ -75,6 +75,10 @@ self.onmessage = async (event) => {
       const fetchMs = Math.round(performance.now() - fetchStarted);
       const loadMs = api.Initialize(patternEval, moveOrdering, message.ttBits);
       self.postMessage({ type: 'ready', runtimeMs, fetchMs, loadMs, resources: transferSummary() });
+    } else if (message.type === 'move') {
+      // 対局ページから: 盤面と手番とレベルを受け取り、打つマスの番号(行 × 8 + 列)を返す
+      const square = api.ChooseMove(message.board, message.side, message.level);
+      self.postMessage({ type: 'moved', square, thinkMs: api.LastThinkMs() });
     } else if (message.type === 'measure') {
       const moves = [], nodes = [];
       let totalMs = 0, maxMs = 0, maxMove = 0;
