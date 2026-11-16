@@ -58,7 +58,7 @@ public class OthelloAI
     // 探索の窓の無限大。どの評価値・終局の点数よりも外側にある必要がある
     private const int Inf = 1_000_000_000;
 
-    // 終局の点数の基準(勝ち = WinScore + 石数差、負け = -WinScore - 石数差)。
+    // 終局の点数の基準(勝ち = WinScore + 終局の値、負け = -WinScore + 終局の値。終局の値は FinalValue)。
     // 窓の端(±Inf)と重なると、2石差以上の勝ち負けが窓の外に出て、最善手を正しく選べなくなるため、Infの内側に置く
     private const int WinScore = Inf / 2;
 
@@ -420,11 +420,15 @@ public class OthelloAI
     }
 
     // ---- 完全読み ----
-    // 完全読みの値は、手番から見た最終の石数の差(-64〜64。空きマスは数えない)。
-    // 中盤の探索の点数(WinScore + 石数差)とは別の尺度で、置換表は手ごとに空にするので混ざらない。
+    // 完全読みの値は、手番から見た終局の値(FinalValue。石数の差 × FinalValueScale ± 終局の空きマス)。
+    // 中盤の探索の点数(WinScore + 終局の値)とは別の尺度で、置換表は手ごとに空にするので混ざらない。
 
-    /// <summary>完全読みの値(石数の差)の最大</summary>
-    private const int MaxDiscDiff = 64;
+    /// <summary>終局の値で、石数の差に掛ける倍率(終局の空きマスは60より少ないので、64倍すれば石数の差の順が崩れない)</summary>
+    private const int FinalValueScale = 64;
+    /// <summary>終局の値の最大(64対0で、空きマスが60残ったとしても超えない)</summary>
+    private const int MaxFinalValue = 64 * FinalValueScale + 60;
+    /// <summary>どの終局の値よりも小さい値(最善の値を探し始めるときに使う)</summary>
+    private const int BelowAnyFinalValue = -MaxFinalValue - 1;
     /// <summary>空きマスがこの数以下になったら、置換表と並べ替えを使わない小さな探索に切り替える</summary>
     private const int SmallSolveEmpties = 6;
     /// <summary>空きマスがこの数以上の局面では、評価関数も使って手を並べる(未満は相手の打てる手の数だけで並べる)</summary>
@@ -463,9 +467,11 @@ public class OthelloAI
         EvalState rootState = PatternEvaluator.CreateState(board);
         int moveCount = OrderSolveMoves(board, rootState, board.GetMoves(), -1, moves);
 
-        int alpha = -65, beta = 65;
+        // 少なくとも1手は打つので、終局の値は「64石差 + 今の空きマス」を超えない(超えない値が見つかったら、ほかの手を読まずに済む)
+        int bound = FinalValueBound(board.EmptyCount);
+        int alpha = -bound - 1, beta = bound + 1;
         int bestMove = moves[0];
-        int bestScore = -65;
+        int bestScore = BelowAnyFinalValue;
         for (int i = 0; i < moveCount; i++)
         {
             ulong flipped = board.GetFlipped(moves[i]);
@@ -484,26 +490,29 @@ public class OthelloAI
             }
             if (score > bestScore) { bestScore = score; bestMove = moves[i]; }
             alpha = Math.Max(alpha, score);
-            if (alpha >= MaxDiscDiff) break; // これより良い値はない
+            if (alpha >= bound) break; // これより良い値はない
         }
 
-        string result = bestScore > 0 ? $"勝ち(+{bestScore}石差)" : bestScore < 0 ? $"負け({bestScore}石差)" : "引き分け";
+        (int discDiff, int emptiesLeft) = SplitFinalValue(bestScore);
+        string result = bestScore > 0 ? $"勝ち(+{discDiff}石差、空き{emptiesLeft}マスで終局)"
+                      : bestScore < 0 ? $"負け({discDiff}石差、空き{emptiesLeft}マスで終局)" : "引き分け";
         InfoLog($"完全読み完了: 最善手={BitBoard.BitToCoord(bestMove)}  結果={result}  ノード={_recursionsCount}");
         return bestMove;
     }
 
     /// <summary>
-    /// 完全読み(置換表・ETC・手の並べ替えつきの NegaScout)。値は手番から見た最終の石数の差。
+    /// 完全読み(置換表・ETC・手の並べ替えつきの NegaScout)。値は手番から見た終局の値(FinalValue)。
     /// state(差分評価の番号)は、手の並べ替えに評価関数を使う残り EvalOrderingEmpties マス以上の局面でだけ正しい値が入っている
     /// </summary>
     private int Solve(BitBoard board, in EvalState state, int alpha, int beta)
     {
-        // 値は -64〜64 にしかならないので、窓をその範囲に絞る(64勝ちが見つかったら、ほかの手を読まずに済む)
-        if (beta > MaxDiscDiff) beta = MaxDiscDiff;
-        if (alpha < -MaxDiscDiff) alpha = -MaxDiscDiff;
+        // 値は ±FinalValueBound(空きマス) の外にならないので、窓をその範囲に絞る(いちばん良い勝ちが見つかったら、ほかの手を読まずに済む)
+        int empties = board.EmptyCount;
+        int bound = FinalValueBound(empties);
+        if (beta > bound) beta = bound;
+        if (alpha < -bound) alpha = -bound;
         if (alpha >= beta) return alpha;
 
-        int empties = board.EmptyCount;
         if (empties <= SmallSolveEmpties) return SolveSmall(board, alpha, beta, empties);
 
         // 100万局面ごとに進み具合を書く
@@ -523,7 +532,7 @@ public class OthelloAI
         if (movesBit == 0)
         {
             var passed = new BitBoard(board.Opponent, board.Player);
-            if (passed.GetMoves() == 0) return FinalDiscDiff(board);
+            if (passed.GetMoves() == 0) return FinalValue(board);
             _recursionsCount++;
             PatternEvaluator.Pass(state, out EvalState passedState);
             return -Solve(passed, passedState, -beta, -alpha);
@@ -545,7 +554,7 @@ public class OthelloAI
             }
         }
 
-        int bestScore = -65;
+        int bestScore = BelowAnyFinalValue;
         int localBestMove = moves[0];
         for (int i = 0; i < moveCount; i++)
         {
@@ -714,8 +723,9 @@ public class OthelloAI
     private int SolveSmall(BitBoard board, int alpha, int beta, int empties)
     {
         _recursionsCount++;
-        if (beta > MaxDiscDiff) beta = MaxDiscDiff;
-        if (alpha < -MaxDiscDiff) alpha = -MaxDiscDiff;
+        int bound = FinalValueBound(empties);
+        if (beta > bound) beta = bound;
+        if (alpha < -bound) alpha = -bound;
         if (alpha >= beta) return alpha;
 
         ulong empty = ~(board.Player | board.Opponent);
@@ -728,7 +738,7 @@ public class OthelloAI
         if ((BitOperations.PopCount(empty & QuadrantBottomLeft) & 1) != 0) odd |= QuadrantBottomLeft;
         if ((BitOperations.PopCount(empty & QuadrantBottomRight) & 1) != 0) odd |= QuadrantBottomRight;
 
-        int bestScore = -65;
+        int bestScore = BelowAnyFinalValue;
         bool moved = false;
         for (int pass = 0; pass < 2; pass++)
         {
@@ -758,35 +768,63 @@ public class OthelloAI
 
         // 打てないときはパス。相手も打てなければ終局
         var passed = new BitBoard(board.Opponent, board.Player);
-        if (passed.GetMoves() == 0) return FinalDiscDiff(board);
+        if (passed.GetMoves() == 0) return FinalValue(board);
         return -SolveSmall(passed, -beta, -alpha, empties);
     }
 
-    /// <summary>空きマスが1つの局面の値(打てる側が打ち、どちらも打てなければそのまま終局)</summary>
+    /// <summary>
+    /// 空きマスが1つの局面の値(打てる側が打ち、どちらも打てなければそのまま終局)。
+    /// 打てば空きマスは0になるので、値は石数の差 × FinalValueScale だけになる
+    /// </summary>
     private static int SolveLastMove(BitBoard board, ulong empty)
     {
         int pos = BitOperations.TrailingZeroCount(empty);
         int diff = board.PlayerCount - board.OpponentCount;
         int flipped = BitOperations.PopCount(board.GetFlipped(pos));
-        if (flipped > 0) return diff + 2 * flipped + 1;
+        if (flipped > 0) return (diff + 2 * flipped + 1) * FinalValueScale;
 
         int opponentFlipped = BitOperations.PopCount(new BitBoard(board.Opponent, board.Player).GetFlipped(pos));
-        if (opponentFlipped > 0) return diff - 2 * opponentFlipped - 1;
-        return diff;
+        if (opponentFlipped > 0) return (diff - 2 * opponentFlipped - 1) * FinalValueScale;
+        return FinalValue(board);
     }
 
-    /// <summary>終局の値(手番から見た石数の差。空きマスは数えない)</summary>
-    private static int FinalDiscDiff(BitBoard board) => board.PlayerCount - board.OpponentCount;
+    /// <summary>
+    /// 終局の値(手番から見た値。企画 P-11・P-12)。
+    /// 石数の差は、残った空きマスを勝った側の石として数える(公式の決まりと同じ。相手の石を全部取れば、いつでも64石差)。
+    /// 値 = 石数の差 × FinalValueScale +(勝ちなら +空きマス、負けなら −空きマス)。
+    /// 石数の差がいちばん大事で、差が同じなら、勝つときは早く終わる(空きマスが多く残る)ほど高く、負けるときは長引くほど高い。
+    /// 終局の局面だけで決まる値なので、どこから読んでも同じになり、置換表にもそのまま書ける
+    /// </summary>
+    private static int FinalValue(BitBoard board)
+    {
+        int player = board.PlayerCount;
+        int opponent = board.OpponentCount;
+        int empties = 64 - player - opponent;
+        if (player > opponent) return (player + empties - opponent) * FinalValueScale + empties;
+        if (player < opponent) return -(opponent + empties - player) * FinalValueScale - empties;
+        return 0;
+    }
 
     /// <summary>
-    /// ゲーム終了時のスコア（現プレイヤー視点の駒数差）
+    /// 空きマスが empties の局面から読んだ終局の値の上限(下限はこの −1 倍)。
+    /// 石数の差は64まで、終局の空きマスは今の空きマスまで(今が終局なら今の空きマスと同じ)
     /// </summary>
+    private static int FinalValueBound(int empties) => 64 * FinalValueScale + empties;
+
+    /// <summary>終局の値を、石数の差(空きマスを勝った側に足したもの)と終局の空きマスに分ける(ログに出すため)</summary>
+    internal static (int discDiff, int emptiesLeft) SplitFinalValue(int value)
+    {
+        // 勝ちは「差 × 64 + 空きマス」、負けは「差 × 64 − 空きマス」(空きマスは64より少ない)なので、0に向かって切り捨てれば差になる
+        int discDiff = value / FinalValueScale;
+        return (discDiff, Math.Abs(value - discDiff * FinalValueScale));
+    }
+
+    /// <summary>中盤の探索で終局に着いたときの点数。勝ち負けがわかった点数(WinScore)に、終局の値を足す</summary>
     private static int FinalScore(BitBoard board)
     {
-        int p = board.PlayerCount;
-        int o = board.OpponentCount;
-        if (p > o) return WinScore + (p - o);
-        if (p < o) return -WinScore - (o - p);
+        int value = FinalValue(board);
+        if (value > 0) return WinScore + value;
+        if (value < 0) return -WinScore + value;
         return 0;
     }
 

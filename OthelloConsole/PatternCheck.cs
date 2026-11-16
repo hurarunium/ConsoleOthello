@@ -205,8 +205,8 @@ public static class PatternCheck
         }
     }
 
-    /// <summary>ビットボード(手番の側 = Player)を、黒の番のゲームデータにする</summary>
-    private static MainGameData ToGameData(BitBoard board, int level)
+    /// <summary>ビットボード(手番の側 = Player)を、黒の番のゲームデータにする(SearchCheck からも使う)</summary>
+    internal static MainGameData ToGameData(BitBoard board, int level)
     {
         var gameData = new MainGameData
         {
