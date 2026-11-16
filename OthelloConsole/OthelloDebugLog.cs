@@ -85,18 +85,6 @@ public static class OthelloDebugLog
     }
 
     /// <summary>
-    /// Detail: デバッグON かつ Detail レベル時のみ出力（大量ログ向け）
-    /// </summary>
-    public static void DetailLog(string message)
-    {
-        if (!_isDebug) return;
-        if (CurrentLevel != LogLevel.Detail) return;
-
-        Console.WriteLine($"[DETAIL] {message}");
-        sw?.WriteLine($"[DETAIL] {message}");
-    }
-
-    /// <summary>
     /// ゲームログファイルに書き込む（常に記録）
     /// </summary>
     public static void GameLog(string message)
