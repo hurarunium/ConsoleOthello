@@ -15,3 +15,6 @@ publish/
 external/
 # 対戦ベンチの結果
 bench-results/
+
+# ブラウザ版のgzipした評価ファイル(weights/ から作る)
+OthelloWeb/wwwroot/weights/
