@@ -25,7 +25,7 @@ public sealed class BenchOptions
     /// 起動の引数を読み取る。
     /// 例: --bench --our-level 5 --level 5 --games 40 --opening-moves 8 --seed 1
     /// (--level は Egaroucid のレベル、--our-level は自分のAIのレベル。評価ファイルは --weights で変えられる。標準は weights/pattern_eval.bin。
-    ///  LMR はレベルどおり(AiLevel.UsesLmr)。--lmr で必ず使い、--no-lmr で使わずに打つ)
+    ///  MPC はレベルどおり(AiLevel.UsesMpc)。--mpc で必ず使い、--no-mpc で使わずに打つ。--mpc-t で余裕を変えられる)
     /// </summary>
     public static BenchOptions Parse(string[] args)
     {
@@ -88,8 +88,10 @@ public sealed class BenchSummary
     public string EndedAt { get; set; } = "";
     public int OurLevel { get; set; }
     public string OurWeights { get; set; } = "";
-    /// <summary>中盤の探索で LMR を使ったか(レベルどおり。--lmr / --no-lmr で上書きできる)</summary>
-    public bool OurUsesLmr { get; set; } = true;
+    /// <summary>中盤の探索で MPC を使ったか(レベルどおり。--mpc / --no-mpc で上書きできる)</summary>
+    public bool OurUsesMpc { get; set; }
+    /// <summary>MPC の余裕(誤差の標準偏差の何倍か。MPC を使わないときも、レベルの値を書く)</summary>
+    public double OurMpcSelectivity { get; set; }
     public int EgaroucidLevel { get; set; }
     public bool EgaroucidUsesBook { get; set; }
     public int EgaroucidThreads { get; set; }
@@ -121,9 +123,15 @@ public static class BenchMode
     public static void Run(string[] args)
     {
         BenchOptions options = BenchOptions.Parse(args);
-        bool? lmrOverride = AiLevel.LmrOverrideFromArgs(args);
-        bool useLmr = lmrOverride ?? AiLevel.UsesLmr(options.OurLevel);
-        var ai = new OthelloAI(EvaluatorFile.LoadFromArgs(args, out string weightsSource)) { LmrOverride = lmrOverride };
+        bool? mpcOverride = AiLevel.MpcOverrideFromArgs(args);
+        double? mpcSelectivityOverride = AiLevel.MpcSelectivityFromArgs(args);
+        bool useMpc = mpcOverride ?? AiLevel.UsesMpc(options.OurLevel);
+        double mpcSelectivity = mpcSelectivityOverride ?? AiLevel.MpcSelectivity(options.OurLevel);
+        var ai = new OthelloAI(EvaluatorFile.LoadFromArgs(args, out string weightsSource))
+        {
+            MpcOverride = mpcOverride,
+            MpcSelectivityOverride = mpcSelectivityOverride,
+        };
 
         DateTimeOffset startedAt = DateTimeOffset.Now;
         Directory.CreateDirectory(options.OutputDirectory);
@@ -133,7 +141,7 @@ public static class BenchMode
         string gamesPath = Path.Combine(options.OutputDirectory, baseName + "-games.jsonl");
         string summaryPath = Path.Combine(options.OutputDirectory, baseName + "-summary.json");
 
-        Console.WriteLine($"ベンチ開始: 自分のAI=レベル{options.OurLevel}({weightsSource}、LMR{(useLmr ? "あり" : "なし")}{(lmrOverride == null ? "" : "(指定)")})  Egaroucid lv.{options.EgaroucidLevel}"
+        Console.WriteLine($"ベンチ開始: 自分のAI=レベル{options.OurLevel}({weightsSource}、MPC{(useMpc ? $"あり({mpcSelectivity:F2})" : "なし")}{(mpcOverride == null && mpcSelectivityOverride == null ? "" : "(指定)")})  Egaroucid lv.{options.EgaroucidLevel}"
                         + $"(定石の本={(options.EgaroucidUsesBook ? "あり" : "なし")}, スレッド={options.EgaroucidThreads})"
                         + $"  {options.Games}局  序盤のランダム手={options.OpeningMoves}  種={options.Seed}");
 
@@ -167,7 +175,8 @@ public static class BenchMode
         }
 
         BenchSummary summary = Summarize(results, options, weightsSource, startedAt);
-        summary.OurUsesLmr = useLmr;
+        summary.OurUsesMpc = useMpc;
+        summary.OurMpcSelectivity = mpcSelectivity;
         File.WriteAllText(summaryPath, JsonSerializer.Serialize(summary, s_jsonOptions));
         PrintSummary(summary);
         Console.WriteLine($"結果: {Path.GetFullPath(gamesPath)}");

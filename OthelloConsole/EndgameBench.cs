@@ -11,7 +11,8 @@ using System.Diagnostics;
 ///     --force-solve  (レベルに関係なく完全読みする。完全読みに入る上限を見直すときに使う)
 ///     --transcript f5d6c3...  (棋譜を並べ直し、各局面で手を選ぶ時間を測る。ベンチで遅かった手を探すときに使う)
 ///     --only-move 41  (--transcript のうち、その手目の局面だけを測る)
-///     --lmr / --no-lmr  (中盤の探索で LMR を必ず使う / 使わない。どちらもなければレベルどおり)
+///     --mpc / --no-mpc  (中盤の探索で MPC を必ず使う / 使わない。どちらもなければレベルどおり)
+///     --mpc-t 1.8  (MPC の余裕を変える。切り方を選ぶときに使う)
 /// </summary>
 public static class EndgameBench
 {
@@ -22,16 +23,17 @@ public static class EndgameBench
         int positions = int.Parse(ValueOf(args, "--positions") ?? "30");
         int level = int.Parse(ValueOf(args, "--level") ?? AiLevel.Max.ToString());
         bool forceSolve = args.Contains("--force-solve");
-        bool? lmrOverride = AiLevel.LmrOverrideFromArgs(args);
-        bool useLmr = lmrOverride ?? AiLevel.UsesLmr(level);
+        bool? mpcOverride = AiLevel.MpcOverrideFromArgs(args);
+        double? mpcSelectivity = AiLevel.MpcSelectivityFromArgs(args);
+        bool useMpc = mpcOverride ?? AiLevel.UsesMpc(level);
 
         PatternEvaluator evaluator = EvaluatorFile.LoadFromArgs(args, out string description);
         Console.WriteLine($"評価関数: {description}");
         Console.WriteLine(forceSolve
             ? $"棋譜: {wthorPath}  すべて完全読み"
-            : $"棋譜: {wthorPath}  レベル{level}(残り{AiLevel.PerfectSolveEmpties(level)}マスから完全読み)、LMR{(useLmr ? "あり" : "なし")}");
+            : $"棋譜: {wthorPath}  レベル{level}(残り{AiLevel.PerfectSolveEmpties(level)}マスから完全読み)、MPC{(useMpc ? $"あり({mpcSelectivity ?? AiLevel.MpcSelectivity(level):F2})" : "なし")}");
 
-        var ai = new OthelloAI(evaluator) { LmrOverride = lmrOverride };
+        var ai = new OthelloAI(evaluator) { MpcOverride = mpcOverride, MpcSelectivityOverride = mpcSelectivity };
         OthelloDebugLog.SuppressOutput = true;
         try
         {

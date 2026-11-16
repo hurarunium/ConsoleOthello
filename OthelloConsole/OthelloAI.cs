@@ -15,13 +15,23 @@ public class OthelloAI
     }
 
     /// <summary>
-    /// 中盤の探索で LMR(後ろの手を浅く読む近似)を使うかの上書き。null ならレベルどおり(AiLevel.UsesLmr)。
-    /// LMR あり・なしを比べるため(--lmr / --no-lmr)に使う
+    /// 中盤の探索で MPC を使うかの上書き。null ならレベルどおり(AiLevel.UsesMpc)。
+    /// MPC あり・なしを比べるため(--mpc / --no-mpc)に使う
     /// </summary>
-    public bool? LmrOverride { get; init; }
+    public bool? MpcOverride { get; init; }
 
-    /// <summary>いま選んでいる手で LMR を使うか(ChooseMove でレベルから決める)</summary>
-    private bool _useLmr;
+    /// <summary>MPC の余裕(誤差の標準偏差の何倍か)の上書き。null ならレベルどおり(AiLevel.MpcSelectivity)。切り方を選ぶため(--mpc-t)に使う</summary>
+    public double? MpcSelectivityOverride { get; init; }
+
+    /// <summary>いま選んでいる手で MPC を使うか(ChooseMove でレベルから決める)</summary>
+    private bool _useMpc;
+    /// <summary>いま選んでいる手の MPC の余裕</summary>
+    private double _mpcSelectivity;
+    /// <summary>MPC の浅い読みの最中か(浅い読みの中では MPC を使わない)</summary>
+    private bool _inMpcProbe;
+    /// <summary>反復深化でいま読んでいる深さ(ルートでは MPC を使わないため)</summary>
+    private int _iterationDepth;
+    private int _mpcCutCount;          // MPC で切った回数
 
     private int _maxDepth;
     private int _recursionsCount;
@@ -75,9 +85,11 @@ public class OthelloAI
         int level = AiLevel.Clamp(requestedLevel);
         _maxDepth = AiLevel.MidgameDepth(level);
         _perfectSolveEmpties = AiLevel.PerfectSolveEmpties(level);
-        _useLmr = LmrOverride ?? AiLevel.UsesLmr(level);
+        _useMpc = MpcOverride ?? AiLevel.UsesMpc(level);
+        _mpcSelectivity = MpcSelectivityOverride ?? AiLevel.MpcSelectivity(level);
+        _mpcCutCount = 0;
 
-        InfoLog($"AI思考開始 (レベル{level}: 中盤{_maxDepth}手読み・残り{_perfectSolveEmpties}マスから完全読み・LMR{(_useLmr ? "あり" : "なし")}  残りマス={board.EmptyCount})");
+        InfoLog($"AI思考開始 (レベル{level}: 中盤{_maxDepth}手読み・残り{_perfectSolveEmpties}マスから完全読み・MPC{(_useMpc ? $"あり({_mpcSelectivity:F2})" : "なし")}  残りマス={board.EmptyCount})");
         _tt.Clear();
 
         // Killer Move テーブル初期化
@@ -92,21 +104,50 @@ public class OthelloAI
             ? SolvePerfectRoot(board)
             : IterativeDeepening(board, _maxDepth);
 
-        DebugLog($"探索統計: αβカット={_abCutCount}  PVS再探索={_pvsResearchCount}  完全読み={(_perfSolveTriggered ? "あり" : "なし")}");
+        DebugLog($"探索統計: αβカット={_abCutCount}  PVS再探索={_pvsResearchCount}  MPCカット={_mpcCutCount}  完全読み={(_perfSolveTriggered ? "あり" : "なし")}");
         DebugLog($"置換表: ヒット={_tt.HitCount} ({_tt.HitRate:F1}%)  ミス={_tt.MissCount}");
 
         GameLog($"AI評価\nレベル:{level} 探索深さ:{_maxDepth} 完全読み:{_perfSolveTriggered} 総計算手順回数：{_recursionsCount} 最良手:{BitBoard.BitToCoord(bestMove)}");
         return bestMove;
     }
 
-    /// <summary>反復深化で maxDepth まで読み、最善手を返す</summary>
-    private int IterativeDeepening(BitBoard board, int maxDepth)
+    /// <summary>
+    /// 近似(MPC)なしで maxDepth まで反復深化し、深さ1〜maxDepth のルートの値を返す(添字 = 深さ。0 は使わない)。
+    /// MPC の誤差を集める測定(--mpc-stats)で、浅い読みと深い読みの値を比べるために使う
+    /// </summary>
+    internal int[] RootValuesByDepth(BitBoard board, int maxDepth)
+    {
+        _recursionsCount = 0;
+        _maxDepth = maxDepth;
+        _useMpc = false;
+        _tt.Clear();
+        _killerMoves = new int[maxDepth + 2, 2];
+        for (int d = 0; d < maxDepth + 2; d++) { _killerMoves[d, 0] = -1; _killerMoves[d, 1] = -1; }
+        Array.Clear(_historyTable, 0, 64);
+
+        var values = new int[maxDepth + 1];
+        IterativeDeepening(board, maxDepth, values);
+        return values;
+    }
+
+    /// <summary>
+    /// MPC で、深さ deep の読みの代わりに使う浅い読みの深さ。深さの半分ほどにし、偶奇を deep にそろえる
+    /// (オセロの評価値は、どちらの手番で読み終えるかで偏るため)
+    /// </summary>
+    internal static int MpcShallowDepth(int deep) => ((deep / 2) & ~1) + (deep & 1);
+
+    /// <summary>終局まで読み切った値か(中盤の評価値ではなく、WinScore を含む点数か)</summary>
+    internal static bool IsFinalScore(int score) => Math.Abs(score) >= WinScore / 2;
+
+    /// <summary>反復深化で maxDepth まで読み、最善手を返す。valuesByDepth を渡すと、各深さのルートの値を書く</summary>
+    private int IterativeDeepening(BitBoard board, int maxDepth, int[]? valuesByDepth = null)
     {
         int bestMove = -1;
         int prevScore = 0; // Aspiration Window 用（前の深さのスコア）
 
         for (int depth = 1; depth <= maxDepth; depth++)
         {
+            _iterationDepth = depth;
             for (int i = 0; i < 64; i++) _historyTable[i] >>= 1;
 
             int iterBest = -1;
@@ -137,6 +178,7 @@ public class OthelloAI
                 }
             }
             prevScore = score;
+            if (valuesByDepth != null) valuesByDepth[depth] = score;
 
             if (iterBest >= 0) bestMove = iterBest;
 
@@ -188,6 +230,14 @@ public class OthelloAI
             int passScore = -NegaScout(new BitBoard(board.Opponent, board.Player), depth - 1, -beta, -alpha, ref bestMove);
             _tt.Store(hash, depth, passScore, alpha, beta, -1);
             return passScore;
+        }
+
+        // MPC: 浅い読みの値から、深い読みが窓の外になると見込めるなら、読まずに切る(ルートでは使わない)
+        if (_useMpc && !_inMpcProbe && depth >= MpcMinDepth && depth < _iterationDepth
+            && TryMultiProbCut(board, depth, alpha, beta, out int mpcScore))
+        {
+            _mpcCutCount++;
+            return mpcScore;
         }
 
         // stackalloc でGCフリーな合法手バッファを確保
@@ -270,19 +320,9 @@ public class OthelloAI
             }
             else
             {
-                // LMR（Late Move Reductions）:
-                // Move Ordering で後半の手（TT/Killer以外）は外れの可能性が高い。
-                // depth-2 で Null Window 探索し、alpha を超えた場合のみ full depth で再探索する。
-                // 条件: depth>=3 かつ insertPos（TT/Killer枠）より後の手
+                // 2手目以降は Null Window で「αより良いか」だけを確かめる
                 int dummy = -1;
-                bool canLMR = _useLmr && depth >= 3 && i >= Math.Max(2, insertPos);
-                int lmrDepth = canLMR ? depth - 2 : depth - 1;
-
-                score = -NegaScout(next, lmrDepth, -alpha - 1, -alpha, ref dummy);
-
-                // LMR で alpha を超えた → full depth の Null Window で再確認
-                if (canLMR && score > alpha)
-                    score = -NegaScout(next, depth - 1, -alpha - 1, -alpha, ref dummy);
+                score = -NegaScout(next, depth - 1, -alpha - 1, -alpha, ref dummy);
 
                 // PVS再探索: Null Window を超えた場合のみ（この手が PV 候補）
                 if (score > alpha && score < beta)
@@ -321,6 +361,49 @@ public class OthelloAI
 
         _tt.Store(hash, depth, bestScore, originalAlpha, beta, localBestMove);
         return bestScore;
+    }
+
+    // ---- MPC(Multi-ProbCut) ----
+    // 深さ D の読みの値は、浅い読み(深さ d = MpcShallowDepth(D))の値 + 平均のずれ にほぼ等しく、
+    // その誤差は正規分布に近い(標準偏差 σ)。浅い読みで「β + 余裕 以上」なら、深い読みも β 以上と見込んで切る(αも同じ)。
+    // ずれと σ は、実戦の局面で集めた値(--mpc-stats)。
+
+    /// <summary>MPC を使う最小の深さ(これより浅いと、浅い読みの手間が節約より大きい)</summary>
+    private const int MpcMinDepth = 3;
+
+    /// <summary>
+    /// MPC を試す。切れたら true で、score に窓の端(β か α)を返す。
+    /// 静的な評価値がすでに窓の外にあるときだけ、浅い読みを試す(浅い読みの無駄を減らすため)
+    /// </summary>
+    private bool TryMultiProbCut(BitBoard board, int depth, int alpha, int beta, out int score)
+    {
+        score = 0;
+        int shallow = MpcShallowDepth(depth);
+        (double meanDiscs, double sigmaDiscs) = MpcError.Get(board.EmptyCount, depth);
+        // 値は評価値の単位(石数 × Scale)
+        int margin = (int)Math.Ceiling(_mpcSelectivity * sigmaDiscs * PatternEvaluator.Scale);
+        int shift = (int)Math.Round(meanDiscs * PatternEvaluator.Scale);
+        int eval = _evaluator.Evaluate(board);
+        int dummy = -1;
+
+        // 深い読み ≈ 浅い読み + shift。深い読み ≥ β と見込めるのは、浅い読み ≥ β − shift + margin のとき
+        if (beta < WinScore / 2 && eval >= beta)
+        {
+            int probeBeta = beta - shift + margin;
+            _inMpcProbe = true;
+            int value = NegaScout(board, shallow, probeBeta - 1, probeBeta, ref dummy);
+            _inMpcProbe = false;
+            if (value >= probeBeta) { score = beta; return true; }
+        }
+        if (alpha > -WinScore / 2 && eval <= alpha)
+        {
+            int probeAlpha = alpha - shift - margin;
+            _inMpcProbe = true;
+            int value = NegaScout(board, shallow, probeAlpha, probeAlpha + 1, ref dummy);
+            _inMpcProbe = false;
+            if (value <= probeAlpha) { score = alpha; return true; }
+        }
+        return false;
     }
 
     // ---- 完全読み ----

@@ -25,12 +25,12 @@ public static class AiLevel
     public static readonly TimeSpan TargetThinkTime = TimeSpan.FromSeconds(10);
 
     /// <summary>
-    /// 中盤の探索で LMR(後ろの手を浅く読む近似)を使い始めるレベル。
-    /// LMR を使うと見落としが出て弱くなる(レベル5対lv.5で、LMR ありは33.0%、なしは45.1%、各400局)。
-    /// 一方、LMR がないと深いレベルで1手10秒に収まらない(レベル14は最大31秒)。
-    /// LMR なしでも1手が十分短いレベル11まで(1局で最大0.8秒)は使わず、それより上だけ使う
+    /// 中盤の探索で MPC(Multi-ProbCut。浅い読みの値から、深い読みの結果を見込んで枝を切る近似)を使い始めるレベル。
+    /// 以前は LMR(後ろの手を浅く読む近似)を使っていたが、見落としで弱くなっていた
+    /// (レベル5対lv.5で、LMR ありは33.0%、なしは45.1%、各400局)。強いオセロAI(Logistello・Edax・Egaroucid)にならい、LMR はやめた。
+    /// 近似なしでも1手が十分短いレベル11まで(1局で最大0.8秒)は使わず、深く読むレベル12以上だけ MPC で速くする
     /// </summary>
-    public const int LmrMinLevel = 12;
+    public const int MpcMinLevel = 12;
 
     /// <summary>選べるレベルの一覧(1〜15)</summary>
     public static IReadOnlyList<int> All { get; } = Enumerable.Range(Min, Max - Min + 1).ToList();
@@ -38,14 +38,29 @@ public static class AiLevel
     /// <summary>中盤で読む手数</summary>
     public static int MidgameDepth(int level) => Clamp(level);
 
-    /// <summary>そのレベルで、中盤の探索に LMR を使うか</summary>
-    public static bool UsesLmr(int level) => Clamp(level) >= LmrMinLevel;
+    /// <summary>そのレベルで、中盤の探索に MPC を使うか</summary>
+    public static bool UsesMpc(int level) => Clamp(level) >= MpcMinLevel;
 
     /// <summary>
-    /// 開発用のコマンドの引数から、LMR の決まりの上書きを読む(--lmr で必ず使う、--no-lmr で使わない、どちらもなければ null = レベルどおり)
+    /// MPC で枝を切るときの余裕(誤差の標準偏差の何倍か)。大きいほど切る枝が減り、正確だが遅い。
+    /// 正規分布なら 1.5 倍で約87%、2.5 倍で約99% の確からしさで切る。
+    /// レベル12対lv.12の各100局で、1.0 は41.0%、1.5 は44.0%、2.0 は44.5%、2.5 は47.0%(MPCなしは22局で45.5%、LMR は35.0%)。
+    /// 2.5 でも1局分の思考時間はMPCなしの約20分の1なので、いちばん慎重な 2.5 にした
     /// </summary>
-    public static bool? LmrOverrideFromArgs(string[] args)
-        => args.Contains("--no-lmr") ? false : args.Contains("--lmr") ? true : null;
+    public static double MpcSelectivity(int level) => 2.5;
+
+    /// <summary>
+    /// 開発用のコマンドの引数から、MPC の決まりの上書きを読む(--mpc で必ず使う、--no-mpc で使わない、どちらもなければ null = レベルどおり)
+    /// </summary>
+    public static bool? MpcOverrideFromArgs(string[] args)
+        => args.Contains("--no-mpc") ? false : args.Contains("--mpc") ? true : null;
+
+    /// <summary>開発用のコマンドの引数から、MPC の余裕の上書きを読む(--mpc-t 1.8 など。なければ null = レベルどおり)</summary>
+    public static double? MpcSelectivityFromArgs(string[] args)
+    {
+        int index = Array.IndexOf(args, "--mpc-t");
+        return index >= 0 && index + 1 < args.Length ? double.Parse(args[index + 1], System.Globalization.CultureInfo.InvariantCulture) : null;
+    }
 
     /// <summary>完全読みに入る残りマスの数</summary>
     public static int PerfectSolveEmpties(int level) => Math.Min(2 * Clamp(level), PerfectSolveEmptiesCap);

@@ -32,6 +32,11 @@ internal class Program
             SearchCheck.Run(args);
             return;
         }
+        if (args.Contains("--mpc-stats"))
+        {
+            MpcStats.Run(args);
+            return;
+        }
         if (args.Contains("--endgame-bench"))
         {
             EndgameBench.Run(args);
