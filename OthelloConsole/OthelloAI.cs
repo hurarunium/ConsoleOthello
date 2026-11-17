@@ -1,11 +1,12 @@
 using System.Runtime.CompilerServices;
+using System.Diagnostics;
 using System.Numerics;
 using static OthelloDebugLog;
 
 /// <summary>
 /// ビットボード + 反復深化 + 置換表 + 完全読み + PVS（NegaScout）による最強オセロAI
 /// </summary>
-public class OthelloAI
+public partial class OthelloAI
 {
     /// <summary>評価関数(学習したパターン評価)</summary>
     private readonly PatternEvaluator _evaluator;
@@ -151,6 +152,8 @@ public class OthelloAI
 
         for (int depth = 1; depth <= maxDepth; depth++)
         {
+            if (!CanStartIteration(depth)) break; // 持ち時間の使い方のとき、残りが前の深さにかかった時間より短ければ入らない
+            long iterationStart = Stopwatch.GetTimestamp();
             _iterationDepth = depth;
             for (int i = 0; i < 64; i++) _historyTable[i] >>= 1;
 
@@ -170,23 +173,28 @@ public class OthelloAI
                 int lo = prevScore - AspirationDelta;
                 int hi = prevScore + AspirationDelta;
                 score = NegaScout(board, rootState, depth, lo, hi, ref iterBest);
+                if (_timeUp) break; // 時間切れの深さは捨てる(値が正しくない)
                 if (score <= lo)        // fail-low: 下限を広げて再探索
                 {
                     InfoLog($"深さ {depth,2} 窓の下に外れた(値 {score} ≤ {lo}、ここまで ノード={_recursionsCount})。下限を広げて読み直す");
                     iterBest = -1;
                     score = NegaScout(board, rootState, depth, -Inf, hi, ref iterBest);
+                    if (_timeUp) break;
                 }
                 else if (score >= hi)   // fail-high: 上限を広げて再探索
                 {
                     InfoLog($"深さ {depth,2} 窓の上に外れた(値 {score} ≥ {hi}、ここまで ノード={_recursionsCount})。上限を広げて読み直す");
                     iterBest = -1;
                     score = NegaScout(board, rootState, depth, lo, Inf, ref iterBest);
+                    if (_timeUp) break;
                 }
             }
+            if (_timeUp) break;
             prevScore = score;
             if (valuesByDepth != null) valuesByDepth[depth] = score;
 
             if (iterBest >= 0) bestMove = iterBest;
+            FinishIteration(depth, Stopwatch.GetTimestamp() - iterationStart);
 
             InfoLog($"深さ {depth,2} 完了: 最善手={BitBoard.BitToCoord(bestMove)}  スコア={score,10}  ノード={_recursionsCount}");
         }
@@ -199,6 +207,7 @@ public class OthelloAI
     /// </summary>
     private int NegaScout(BitBoard board, in EvalState state, int depth, int alpha, int beta, ref int bestMove)
     {
+        if (IsTimeUp()) return 0; // 時間切れ(値は捨てられる)。持ち時間のない使い方(レベル)では常に false
         ulong hash = _tt.ComputeHash(board);
         // 置換表に書く値の種類(上限・下限・正確)は、探索を始める前のαで決める。ループ中に更新したαで決めると、βカットの値が「上限」として書かれてしまう
         int originalAlpha = alpha;

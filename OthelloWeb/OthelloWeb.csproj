@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <Compile Include="../OthelloConsole/OthelloAI.cs" Link="Shared/OthelloAI.cs" />
+    <Compile Include="../OthelloConsole/OthelloAI.Timed.cs" Link="Shared/OthelloAI.Timed.cs" />
     <Compile Include="../OthelloConsole/BitBoard.cs" Link="Shared/BitBoard.cs" />
     <Compile Include="../OthelloConsole/TranspositionTable.cs" Link="Shared/TranspositionTable.cs" />
     <Compile Include="../OthelloConsole/PatternEvaluator.cs" Link="Shared/PatternEvaluator.cs" />
