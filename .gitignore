@@ -18,3 +18,6 @@ bench-results/
 
 # ブラウザ版のgzipした評価ファイル(weights/ から作る)
 OthelloWeb/wwwroot/weights/
+
+# 定石を作るときの途中経過(8手目の局面の評価値。定石の本体 opening_book.bin はコミットする)
+OthelloConsole/weights/opening_book_leaves_d*.bin

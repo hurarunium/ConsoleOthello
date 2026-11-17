@@ -13,7 +13,6 @@ using System.Numerics;
 /// </summary>
 public static class TimedMatch
 {
-    private const int OpeningPlies = 8;
 
     public static void Run(string[] args)
     {
@@ -23,11 +22,12 @@ public static class TimedMatch
         int games = int.Parse(ValueOf(args, "--games") ?? "100");
         double budgetMs = double.Parse(ValueOf(args, "--budget-ms") ?? "150", System.Globalization.CultureInfo.InvariantCulture);
         int ttBits = int.Parse(ValueOf(args, "--tt-bits") ?? "20");
+        int openingPlies = int.Parse(ValueOf(args, "--opening-plies") ?? "8");
         var budget = TimeSpan.FromMilliseconds(budgetMs);
 
         OthelloAI aiA = Create(evaluator, ttBits, args, "--a-");
         OthelloAI aiB = Create(evaluator, ttBits, args, "--b-");
-        Console.WriteLine($"持ち時間 {budgetMs:F0}ms、置換表 2^{ttBits}、{games}局(同じ序盤で先手・後手を入れ替える)");
+        Console.WriteLine($"持ち時間 {budgetMs:F0}ms、置換表 2^{ttBits}、{games}局(最初の{openingPlies}手はランダム。同じ序盤で先手・後手を入れ替える)");
         Console.WriteLine($"A: {Describe(args, "--a-")}");
         Console.WriteLine($"B: {Describe(args, "--b-")}");
 
@@ -41,7 +41,7 @@ public static class TimedMatch
             {
                 bool aIsBlack = game % 2 == 0;
                 var random = new Random(9000 + game / 2);
-                (int blackDiscs, int whiteDiscs) = PlayGame(random, aIsBlack ? aiA : aiB, aIsBlack ? aiB : aiA, budget,
+                (int blackDiscs, int whiteDiscs) = PlayGame(random, openingPlies, aIsBlack ? aiA : aiB, aIsBlack ? aiB : aiA, budget,
                                                             aIsBlack ? statsA : statsB, aIsBlack ? statsB : statsA);
                 int a = aIsBlack ? blackDiscs : whiteDiscs;
                 int b = aIsBlack ? whiteDiscs : blackDiscs;
@@ -64,17 +64,22 @@ public static class TimedMatch
 
     private static OthelloAI Create(PatternEvaluator evaluator, int ttBits, string[] args, string prefix) => new(evaluator, ttBits)
     {
+        Book = args.Contains(prefix + "book") ? LoadBook(args) : null,
         MpcOverride = args.Contains(prefix + "mpc") ? true : null,
         EndgameSolveEmpties = int.Parse(ValueOf(args, prefix + "solve-empties") ?? "22"),
         MidgameTimeShare = double.Parse(ValueOf(args, prefix + "midgame-share") ?? "0.15", System.Globalization.CultureInfo.InvariantCulture),
         KeepTranspositionTable = args.Contains(prefix + "keep-tt"),
     };
 
+    private static OpeningBook LoadBook(string[] args)
+        => OpeningBook.LoadFromArgs(args.Where(a => a != "--no-book").ToArray(), out string reason)
+           ?? throw new FileNotFoundException($"定石を読めません: {reason}");
+
     private static string Describe(string[] args, string prefix)
-        => $"置換表を{(args.Contains(prefix + "keep-tt") ? "残す" : "毎手空にする")}、MPC {(args.Contains(prefix + "mpc") ? "あり" : "なし")}、残り{ValueOf(args, prefix + "solve-empties") ?? "22"}マス以下で勝敗を読む(中盤の割合 {ValueOf(args, prefix + "midgame-share") ?? "0.15"})";
+        => $"定石 {(args.Contains(prefix + "book") ? "あり" : "なし")}、置換表を{(args.Contains(prefix + "keep-tt") ? "残す" : "毎手空にする")}、MPC {(args.Contains(prefix + "mpc") ? "あり" : "なし")}、残り{ValueOf(args, prefix + "solve-empties") ?? "22"}マス以下で勝敗を読む(中盤の割合 {ValueOf(args, prefix + "midgame-share") ?? "0.15"})";
 
     /// <summary>1局打つ。黒と白の最終の石数を返す(空きマスは数えない)</summary>
-    private static (int black, int white) PlayGame(Random random, OthelloAI black, OthelloAI white, TimeSpan budget, SideStats blackStats, SideStats whiteStats)
+    private static (int black, int white) PlayGame(Random random, int openingPlies, OthelloAI black, OthelloAI white, TimeSpan budget, SideStats blackStats, SideStats whiteStats)
     {
         BitBoard board = new BitBoard((1UL << 28) | (1UL << 35), (1UL << 27) | (1UL << 36)); // 手番の側が Player(最初は黒)
         bool blackToMove = true;
@@ -92,7 +97,7 @@ public static class TimedMatch
             }
 
             int move;
-            if (plies < OpeningPlies)
+            if (plies < openingPlies)
             {
                 move = PickRandomMove(random, moves);
             }
@@ -132,7 +137,7 @@ public static class TimedMatch
     /// <summary>片方のAIの、時間と深さの記録</summary>
     private sealed class SideStats
     {
-        private int _moves, _searched, _endgameTried, _endgameKnown, _timedOut;
+        private int _moves, _searched, _endgameKnown, _timedOut, _fromBook;
         private double _sumMs, _maxMs, _sumDepth;
         public int OverCount { get; private set; }
 
@@ -144,10 +149,11 @@ public static class TimedMatch
             if (elapsedMs > budgetMs + 5) OverCount++;
             if (result.CompletedDepth > 0) { _searched++; _sumDepth += result.CompletedDepth; }
             if (result.EndgameOutcome != null) _endgameKnown++;
+            if (result.FromBook) _fromBook++;
             if (result.TimedOut) _timedOut++;
         }
 
         public string Describe(double budgetMs)
-            => $"{_moves}手  平均 {_sumMs / Math.Max(1, _moves):F1}ms  最大 {_maxMs:F1}ms  持ち時間+5msを超えた手 {OverCount}  中盤の平均の深さ {_sumDepth / Math.Max(1, _searched):F1}  勝敗が分かった手 {_endgameKnown}  読み切れなかった手 {_timedOut}";
+            => $"{_moves}手  平均 {_sumMs / Math.Max(1, _moves):F1}ms  最大 {_maxMs:F1}ms  持ち時間+5msを超えた手 {OverCount}  中盤の平均の深さ {_sumDepth / Math.Max(1, _searched):F1}  定石の手 {_fromBook}  勝敗が分かった手 {_endgameKnown}  読み切れなかった手 {_timedOut}";
     }
 }

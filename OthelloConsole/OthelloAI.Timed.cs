@@ -8,8 +8,9 @@ using static OthelloDebugLog;
 /// Move は打つマスのビット位置(打てる手がなければ -1)。
 /// CompletedDepth は中盤の読みで読み終えた最後の深さ。Solved は、中盤の読みで終局まで読み切った(CompletedDepth が残りマス数以上)こと。
 /// EndgameOutcome は、終盤の読みで勝ち(1)・引き分け(0)・負け(-1)が分かったときの結果で、分からなかったら null。
+/// FromBook は、定石で手を決めた(探索していない)こと。
 /// </summary>
-public readonly record struct TimedMoveResult(int Move, int CompletedDepth, bool Solved, bool TimedOut, long Nodes, TimeSpan Elapsed, int? EndgameOutcome = null);
+public readonly record struct TimedMoveResult(int Move, int CompletedDepth, bool Solved, bool TimedOut, long Nodes, TimeSpan Elapsed, int? EndgameOutcome = null, bool FromBook = false);
 
 /// <summary>
 /// 持ち時間で止まる使い方(企画 P-06。CodinGameのオセロの、1手150ms)。
@@ -40,6 +41,12 @@ public partial class OthelloAI
     /// </summary>
     public bool KeepTranspositionTable { get; init; }
 
+    /// <summary>
+    /// 序盤の定石(0〜7手目の全局面)。あれば、載っている局面は探索せずに定石の手を打つ。
+    /// 持ち時間つきの使い方だけで使う(レベル1〜15は、確かめた強さを変えないため使わない)
+    /// </summary>
+    public OpeningBook? Book { get; init; }
+
     /// <summary>持ち時間つきの探索の最中か</summary>
     private bool _timedSearch;
     /// <summary>探索の中で時間を見ているか(持ち時間つきの探索の、深さ2以降と、終盤の読み)</summary>
@@ -62,6 +69,8 @@ public partial class OthelloAI
         long startTimestamp = Stopwatch.GetTimestamp();
         ulong movesBit = board.GetMoves();
         if (movesBit == 0) return new TimedMoveResult(-1, 0, false, false, 0, TimeSpan.Zero);
+        if (Book != null && Book.TryGetMove(board, out int bookMove))
+            return new TimedMoveResult(bookMove, 0, false, false, 0, Stopwatch.GetElapsedTime(startTimestamp), null, FromBook: true);
         if ((movesBit & (movesBit - 1)) == 0)
         {
             // 打てる手が1つだけなら、読まずにその手を返す

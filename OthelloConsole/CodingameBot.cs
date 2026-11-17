@@ -25,7 +25,9 @@ public static class CodingameBot
 
         OthelloDebugLog.SuppressOutput = true;
         PatternEvaluator evaluator = EvaluatorFile.LoadFromArgs(args, out _);
-        var ai = new OthelloAI(evaluator, ttBits);
+        OpeningBook? book = OpeningBook.LoadFromArgs(args, out string bookDescription);
+        Console.Error.WriteLine($"定石: {(book != null ? bookDescription : $"なし({bookDescription})")}");
+        var ai = new OthelloAI(evaluator, ttBits) { Book = book };
 
         TextReader input = Console.In;
         TextWriter output = Console.Out;
@@ -70,7 +72,7 @@ public static class CodingameBot
                 Console.Error.WriteLine($"合法手と食い違い: 選んだ手={move} 合法手={string.Join(",", legalActions)}");
                 move = legalActions[0];
             }
-            output.WriteLine($"{move} MSG d{result.CompletedDepth}");
+            output.WriteLine($"{move} MSG {(result.FromBook ? "book" : $"d{result.CompletedDepth}")}");
             output.Flush();
         }
     }
