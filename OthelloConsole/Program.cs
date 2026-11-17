@@ -9,6 +9,16 @@ internal class Program
     {
         // 開発用: 探索で評価するたびに、差分評価の値を盤面から作り直した値と比べる(とても遅くなる)
         OthelloAI.VerifyIncrementalEval = args.Contains("--verify-eval");
+        if (args.Contains("--codingame"))
+        {
+            CodingameBot.Run(args);
+            return;
+        }
+        if (args.Contains("--codingame-referee"))
+        {
+            CodingameReferee.Run(args);
+            return;
+        }
         if (args.Contains("--timed-match"))
         {
             TimedMatch.Run(args);
