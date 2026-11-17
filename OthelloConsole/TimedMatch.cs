@@ -9,7 +9,7 @@ using System.Numerics;
 ///       A は置換表を手をまたいで残し、B は毎手空にする。
 ///     --timed-match --games 100 --a-solve-empties 22 --b-solve-empties 18
 ///       A は残り22マス以下、B は残り18マス以下から勝敗を読む。
-/// 設定は --a-... / --b-... で指定する(keep-tt、solve-empties、midgame-share、mpc)。
+/// 設定は --a-... / --b-... で指定する(book、keep-tt、solve-empties、midgame-share、no-mpc、mpc-t)。
 /// </summary>
 public static class TimedMatch
 {
@@ -65,7 +65,8 @@ public static class TimedMatch
     private static OthelloAI Create(PatternEvaluator evaluator, int ttBits, string[] args, string prefix) => new(evaluator, ttBits)
     {
         Book = args.Contains(prefix + "book") ? LoadBook(args) : null,
-        MpcOverride = args.Contains(prefix + "mpc") ? true : null,
+        MpcOverride = args.Contains(prefix + "no-mpc") ? false : null,
+        MpcSelectivityOverride = ValueOf(args, prefix + "mpc-t") is string t ? double.Parse(t, System.Globalization.CultureInfo.InvariantCulture) : null,
         EndgameSolveEmpties = int.Parse(ValueOf(args, prefix + "solve-empties") ?? "22"),
         MidgameTimeShare = double.Parse(ValueOf(args, prefix + "midgame-share") ?? "0.15", System.Globalization.CultureInfo.InvariantCulture),
         KeepTranspositionTable = args.Contains(prefix + "keep-tt"),
@@ -76,7 +77,7 @@ public static class TimedMatch
            ?? throw new FileNotFoundException($"定石を読めません: {reason}");
 
     private static string Describe(string[] args, string prefix)
-        => $"定石 {(args.Contains(prefix + "book") ? "あり" : "なし")}、置換表を{(args.Contains(prefix + "keep-tt") ? "残す" : "毎手空にする")}、MPC {(args.Contains(prefix + "mpc") ? "あり" : "なし")}、残り{ValueOf(args, prefix + "solve-empties") ?? "22"}マス以下で勝敗を読む(中盤の割合 {ValueOf(args, prefix + "midgame-share") ?? "0.15"})";
+        => $"定石 {(args.Contains(prefix + "book") ? "あり" : "なし")}、置換表を{(args.Contains(prefix + "keep-tt") ? "残す" : "毎手空にする")}、MPC {(args.Contains(prefix + "no-mpc") ? "なし" : $"あり(余裕 {ValueOf(args, prefix + "mpc-t") ?? "2.5"})")}、残り{ValueOf(args, prefix + "solve-empties") ?? "22"}マス以下で勝敗を読む(中盤の割合 {ValueOf(args, prefix + "midgame-share") ?? "0.15"})";
 
     /// <summary>1局打つ。黒と白の最終の石数を返す(空きマスは数えない)</summary>
     private static (int black, int white) PlayGame(Random random, int openingPlies, OthelloAI black, OthelloAI white, TimeSpan budget, SideStats blackStats, SideStats whiteStats)

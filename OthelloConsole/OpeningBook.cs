@@ -246,7 +246,13 @@ public sealed class OpeningBook
     {
         if (args.Contains("--no-book")) { reason = "--no-book"; return null; }
         int index = Array.IndexOf(args, "--book");
-        string path = index >= 0 && index + 1 < args.Length ? args[index + 1] : FindDefaultPath();
+        return LoadFromPath(index >= 0 && index + 1 < args.Length ? args[index + 1] : null, out reason);
+    }
+
+    /// <summary>定石のファイルを読む。path が null なら標準の場所。ファイルがなければ、読めなければ null(その理由を reason に入れる)</summary>
+    public static OpeningBook? LoadFromPath(string? path, out string reason)
+    {
+        path ??= FindDefaultPath();
         if (!File.Exists(path)) { reason = $"{path} がありません"; return null; }
         try
         {

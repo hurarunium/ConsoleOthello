@@ -13,14 +13,14 @@ using System.Globalization;
 /// 時間: 最初の1手は2000ms、2手目からは150ms。超えるとその場で負け。
 ///
 /// 標準出力には手以外を出さない(ログは出さない)。持ち時間は、手元で測った余裕を引いた値(--turn-budget-ms、--first-budget-ms)。
-/// 例: dotnet run -c Release -- --codingame --turn-budget-ms 120
+/// 例: dotnet run -c Release -- --codingame --turn-budget-ms 100
 /// </summary>
 public static class CodingameBot
 {
     public static void Run(string[] args)
     {
-        double turnBudgetMs = double.Parse(ValueOf(args, "--turn-budget-ms") ?? "120", CultureInfo.InvariantCulture);
-        double firstBudgetMs = double.Parse(ValueOf(args, "--first-budget-ms") ?? "1500", CultureInfo.InvariantCulture);
+        double turnBudgetMs = double.Parse(ValueOf(args, "--turn-budget-ms") ?? "100", CultureInfo.InvariantCulture);
+        double firstBudgetMs = double.Parse(ValueOf(args, "--first-budget-ms") ?? "1000", CultureInfo.InvariantCulture);
         int ttBits = int.Parse(ValueOf(args, "--tt-bits") ?? "20");
 
         OthelloDebugLog.SuppressOutput = true;
@@ -61,9 +61,17 @@ public static class CodingameBot
                 ? (DateTime.Now - Process.GetCurrentProcess().StartTime).TotalMilliseconds
                 : Stopwatch.GetElapsedTime(turnStart).TotalMilliseconds;
             double limitMs = firstTurn ? firstBudgetMs : turnBudgetMs;
+            bool isFirstTurn = firstTurn;
             firstTurn = false;
 
             TimedMoveResult result = ai.ChooseMoveTimed(board, TimeSpan.FromMilliseconds(Math.Max(1.0, limitMs - spentMs)));
+
+            // 最初の1手が定石で決まったときは、2000msの残りでJITの暖機をする(最初の探索が、暖機なしの150msで始まらないように)
+            if (isFirstTurn && result.FromBook && !args.Contains("--no-warmup"))
+            {
+                double leftMs = firstBudgetMs - (DateTime.Now - Process.GetCurrentProcess().StartTime).TotalMilliseconds - 250;
+                if (leftMs > 50) ai.WarmUp(TimeSpan.FromMilliseconds(Math.Min(600, leftMs)));
+            }
 
             string move = result.Move >= 0 ? ActionName(result.Move) : "";
             if (!legalActions.Contains(move))

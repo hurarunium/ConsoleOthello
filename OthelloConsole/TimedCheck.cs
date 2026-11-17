@@ -52,7 +52,7 @@ public static class TimedCheck
         int verifyMaxEmpties = int.Parse(ValueOf(args, "--verify-max") ?? "18");
         var ai = new OthelloAI(evaluator, ttBits)
         {
-            MpcOverride = args.Contains("--mpc") ? true : null,
+            MpcOverride = args.Contains("--no-mpc") ? false : null,
             EndgameSolveEmpties = solveEmpties,
             MidgameTimeShare = midgameShare,
             KeepTranspositionTable = args.Contains("--keep-tt"),
@@ -70,7 +70,7 @@ public static class TimedCheck
         TimedMoveResult first = ai.ChooseMoveTimed(InitialBoard(), TimeSpan.FromMilliseconds(2000));
         Console.WriteLine($"最初の1手(持ち時間2000ms): {first.Elapsed.TotalMilliseconds:F1}ms  深さ{first.CompletedDepth}  ノード{first.Nodes}");
 
-        Console.WriteLine($"持ち時間 {budgetMs:F0}ms、許す超過 {toleranceMs:F0}ms、1区分 {positionsPerBucket}局面、置換表 2^{ttBits}({(args.Contains("--keep-tt") ? "手をまたいで残す" : "毎手空にする")})、MPC {(args.Contains("--mpc") ? "あり" : "なし")}、残り{solveEmpties}マス以下で勝敗を読む(中盤の割合 {midgameShare:F2})、勝敗の確認は残り{verifyMaxEmpties}マス以下");
+        Console.WriteLine($"持ち時間 {budgetMs:F0}ms、許す超過 {toleranceMs:F0}ms、1区分 {positionsPerBucket}局面、置換表 2^{ttBits}({(args.Contains("--keep-tt") ? "手をまたいで残す" : "毎手空にする")})、MPC {(args.Contains("--no-mpc") ? "なし" : "あり")}、残り{solveEmpties}マス以下で勝敗を読む(中盤の割合 {midgameShare:F2})、勝敗の確認は残り{verifyMaxEmpties}マス以下");
         Console.WriteLine("残りマス | 局面 | 平均ms | 最大ms | 最大の超過ms | 超過した局面 | 平均の深さ | 読み切り | 時間切れ | 不正な手 | 勝敗が分かった | 勝敗の食い違い | 相手が打てない局面");
 
         double overallMaxMs = 0;

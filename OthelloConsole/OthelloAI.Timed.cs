@@ -83,7 +83,7 @@ public partial class OthelloAI
         _perfSolveTriggered = false;
         _lastProgressLogNodes = 0;
         _maxDepth = board.EmptyCount; // 終局まで読める深さが上限
-        _useMpc = MpcOverride ?? false;
+        _useMpc = MpcOverride ?? true; // 持ち時間つきの使い方では、MPCを標準で使う(150msの対局で、使わない場合に66.5%勝った。Phase 5)
         _mpcSelectivity = MpcSelectivityOverride ?? AiLevel.MpcSelectivity(AiLevel.Max);
         _mpcCutCount = 0;
         if (!KeepTranspositionTable) _tt.Clear();
@@ -198,6 +198,45 @@ public partial class OthelloAI
         _solveTt = _tt;
         int bound = FinalValueBound(board.EmptyCount) + 1;
         return Solve(board, PatternEvaluator.CreateState(board), -bound, bound);
+    }
+
+    /// <summary>
+    /// JIT の暖機。固定の局面(残り44〜16マス)を、短い持ち時間で読ませて、探索・MPC・終盤の読みのコードを一通り動かす。
+    /// プロセスを起動した直後の最初の探索が、JIT の時間で持ち時間を超えないようにするために、最初の1手(2000ms)の中で呼ぶ。
+    /// 定石の範囲(0〜7手目)の局面は使わない
+    /// </summary>
+    public void WarmUp(TimeSpan duration)
+    {
+        long deadline = Stopwatch.GetTimestamp() + (long)(duration.TotalSeconds * Stopwatch.Frequency);
+        int[] emptiesList = { 44, 34, 26, 20, 16 };
+        const double PerPositionMs = 40;
+        for (uint pass = 0; Stopwatch.GetTimestamp() < deadline; pass++)
+        {
+            uint state = 12345 + pass * 7919;
+            (ulong player, ulong opponent) = OpeningBook.InitialPosition;
+            var board = new BitBoard(player, opponent);
+            foreach (int empties in emptiesList)
+            {
+                // 固定の疑似乱数で、残りマスが empties になるまで打つ(打てなければパス、両方打てなければ最初から)
+                while (board.EmptyCount > empties)
+                {
+                    ulong moves = board.GetMoves();
+                    if (moves == 0)
+                    {
+                        var passed = new BitBoard(board.Opponent, board.Player);
+                        board = passed.GetMoves() == 0 ? new BitBoard(player, opponent) : passed;
+                        continue;
+                    }
+                    state = state * 1664525u + 1013904223u;
+                    int pick = (int)((state >> 8) % (uint)BitOperations.PopCount(moves));
+                    for (int i = 0; i < pick; i++) moves &= moves - 1;
+                    board = board.DoMove(BitOperations.TrailingZeroCount(moves));
+                }
+                double remainingMs = Stopwatch.GetElapsedTime(Stopwatch.GetTimestamp(), deadline).TotalMilliseconds;
+                if (remainingMs <= 5) return;
+                if (board.GetMoves() != 0) ChooseMoveTimed(board, TimeSpan.FromMilliseconds(Math.Min(PerPositionMs, remainingMs)));
+            }
+        }
     }
 
     /// <summary>時間切れか。持ち時間のない使い方(レベル)では、時計を見ず常に false</summary>

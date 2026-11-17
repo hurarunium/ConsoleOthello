@@ -9,6 +9,8 @@ public sealed class BenchOptions
     public int EgaroucidLevel { get; init; } = 1;
     /// <summary>自分のAIのレベル(1〜15)</summary>
     public int OurLevel { get; init; } = AiLevel.Default;
+    /// <summary>0より大きければ、レベルでなく、この持ち時間(ms)で止まる使い方(ChooseMoveTimed)で打つ(--our-timed-ms)</summary>
+    public double OurTimedMs { get; init; }
 
     /// <summary>対局数。同じ序盤を先手・後手で1局ずつ打つため、偶数にそろえる</summary>
     public int Games { get; init; } = 20;
@@ -25,6 +27,7 @@ public sealed class BenchOptions
     /// 起動の引数を読み取る。
     /// 例: --bench --our-level 5 --level 5 --games 40 --opening-moves 8 --seed 1
     /// (--level は Egaroucid のレベル、--our-level は自分のAIのレベル。評価ファイルは --weights で変えられる。標準は weights/pattern_eval.bin。
+    ///  --our-timed-ms 150 を付けると、レベルでなく持ち時間150msで止まる使い方で打つ。--tt-bits 20・--our-book・--solve-empties・--midgame-share が使える。
     ///  MPC はレベルどおり(AiLevel.UsesMpc)。--mpc で必ず使い、--no-mpc で使わずに打つ。--mpc-t で余裕を変えられる)
     /// </summary>
     public static BenchOptions Parse(string[] args)
@@ -47,6 +50,7 @@ public sealed class BenchOptions
             OurLevel = AiLevel.TryParse(Value("--our-level") ?? AiLevel.Default.ToString(), out int ourLevel)
                 ? ourLevel
                 : throw new ArgumentException($"--our-level は{AiLevel.Min}〜{AiLevel.Max}にしてください。"),
+            OurTimedMs = double.Parse(Value("--our-timed-ms") ?? "0", System.Globalization.CultureInfo.InvariantCulture),
             Games = games % 2 == 0 ? games : games + 1,
             OpeningMoves = int.Parse(Value("--opening-moves") ?? "8"),
             Seed = int.Parse(Value("--seed") ?? "1"),
@@ -157,7 +161,7 @@ public static class BenchMode
             {
                 List<(int row, int col)> opening = openings[i / 2];
                 int ourTurnNum = i % 2 == 0 ? 1 : 2; // 偶数局目は自分が黒、奇数局目は自分が白
-                BenchGameResult result = PlayGame(ai, egaroucid, options.OurLevel, opening, ourTurnNum);
+                BenchGameResult result = PlayGame(ai, egaroucid, options.OurLevel, options.OurTimedMs, opening, ourTurnNum);
                 result.Index = i + 1;
                 results.Add(result);
 
@@ -214,7 +218,7 @@ public static class BenchMode
     }
 
     /// <summary>1局を最後まで打ち、自分のAIから見た結果を返す</summary>
-    private static BenchGameResult PlayGame(OthelloAI ai, EgaroucidClient egaroucid, int level,
+    private static BenchGameResult PlayGame(OthelloAI ai, EgaroucidClient egaroucid, int level, double timedMs,
                                             List<(int row, int col)> opening, int ourTurnNum)
     {
         MainGameData gameData = CreateInitialGameData(level);
@@ -248,7 +252,7 @@ public static class BenchMode
             bool isOurTurn = gameData._turnNum == ourTurnNum;
             stopwatch.Restart();
             (int row, int col) chosen = isOurTurn
-                ? ai.AI(gameData, false)
+                ? (timedMs > 0 ? ChooseTimed(ai, gameData, timedMs) : ai.AI(gameData, false))
                 : egaroucid.GetMove(gameData._tiles, gameData._turnNum);
             stopwatch.Stop();
 
@@ -286,6 +290,13 @@ public static class BenchMode
                       : "draw";
         result.Transcript = GameTranscript.Format(transcript);
         return result;
+    }
+
+    /// <summary>持ち時間で止まる使い方で、打つマスを選ぶ(行・列は1始まり)</summary>
+    private static (int row, int col) ChooseTimed(OthelloAI ai, MainGameData gameData, double timedMs)
+    {
+        TimedMoveResult result = ai.ChooseMoveTimed(BitBoard.FromMainGameData(gameData), TimeSpan.FromMilliseconds(timedMs));
+        return BitBoard.BitToCoord(result.Move);
     }
 
     /// <summary>初期局面(黒が先手)のゲームデータを作る</summary>

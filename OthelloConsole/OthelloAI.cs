@@ -890,7 +890,8 @@ public partial class OthelloAI
 
     /// <summary>
     /// 開発用のコマンド(ベンチ・測定・確認)の引数から AI を作る。中盤の並べ替え用の評価(--ordering / --no-ordering)と
-    /// その調整(--ord-mid-depth・--ord-mobility)、MPC の上書き(--mpc / --no-mpc / --mpc-t)を読む
+    /// その調整(--ord-mid-depth・--ord-mobility)、MPC の上書き(--mpc / --no-mpc / --mpc-t)、置換表の大きさ(--tt-bits)、
+    /// 持ち時間つきの使い方の設定(--solve-empties・--midgame-share・--our-book)を読む
     /// </summary>
     internal static OthelloAI CreateFromArgs(PatternEvaluator evaluator, string[] args, out string orderingDescription)
     {
@@ -900,9 +901,14 @@ public partial class OthelloAI
             return index >= 0 && index + 1 < args.Length ? int.Parse(args[index + 1]) : fallback;
         }
         OrderingEvaluator? ordering = OrderingEvaluator.LoadFromArgs(args, out orderingDescription);
-        var ai = new OthelloAI(evaluator)
+        var ai = new OthelloAI(evaluator, IntArg("--tt-bits", TranspositionTable.DefaultSizeBits))
         {
             Ordering = ordering,
+            // 持ち時間つきの使い方(ChooseMoveTimed)の設定。--our-book で標準の場所の定石を使う(--book は Egaroucid の定石の指定に使っているため)
+            EndgameSolveEmpties = IntArg("--solve-empties", 22),
+            MidgameTimeShare = Array.IndexOf(args, "--midgame-share") is int shareIndex and >= 0 && shareIndex + 1 < args.Length
+                ? double.Parse(args[shareIndex + 1], System.Globalization.CultureInfo.InvariantCulture) : 0.15,
+            Book = args.Contains("--our-book") ? OpeningBook.LoadFromPath(null, out _) : null,
             MidgameOrderingDepth = IntArg("--ord-mid-depth", DefaultMidgameOrderingDepth),
             MidgameOrderingMobilityWeight = IntArg("--ord-mobility", DefaultMidgameOrderingMobilityWeight),
             MpcOverride = AiLevel.MpcOverrideFromArgs(args),
