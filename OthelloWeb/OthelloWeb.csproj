@@ -11,6 +11,9 @@
     <!-- 発行(publish)は AOT にする。インタプリタでは完全読みがデスクトップ版の約14倍遅く、レベル10以上で1手が最大36秒かかった。
          AOT ではデスクトップ版とほぼ同じ速さ(レベル15で1手の最大4.2秒)。wasm-tools ワークロードが要る -->
     <RunAOTCompilation Condition="'$(Configuration)' == 'Release'">true</RunAOTCompilation>
+    <!-- 発行物は公開するので、.pdb の情報(ビルドした PC のフォルダのパス)を wasm に埋め込まない -->
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+    <DebugSymbols Condition="'$(Configuration)' == 'Release'">false</DebugSymbols>
   </PropertyGroup>
 
   <ItemGroup>
