@@ -45,9 +45,20 @@ public static class TimedCheck
         int ttBits = int.Parse(ValueOf(args, "--tt-bits") ?? "20");
         var budget = TimeSpan.FromMilliseconds(budgetMs);
         int[] emptiesList = ValueOf(args, "--empties")?.Split(',').Select(int.Parse).ToArray()
-                            ?? new[] { 58, 52, 46, 40, 34, 28, 22, 16, 12, 8 };
+                            ?? new[] { 58, 52, 46, 40, 34, 28, 24, 22, 20, 18, 16, 14, 12, 8 };
 
-        var ai = new OthelloAI(evaluator, ttBits) { MpcOverride = args.Contains("--mpc") ? true : null };
+        int solveEmpties = int.Parse(ValueOf(args, "--solve-empties") ?? "22");
+        double midgameShare = double.Parse(ValueOf(args, "--midgame-share") ?? "0.15", System.Globalization.CultureInfo.InvariantCulture);
+        int verifyMaxEmpties = int.Parse(ValueOf(args, "--verify-max") ?? "18");
+        var ai = new OthelloAI(evaluator, ttBits)
+        {
+            MpcOverride = args.Contains("--mpc") ? true : null,
+            EndgameSolveEmpties = solveEmpties,
+            MidgameTimeShare = midgameShare,
+            KeepTranspositionTable = args.Contains("--keep-tt"),
+        };
+        // 終盤の勝敗の読みが正しいかを確かめる相手(時間を気にせず、終局まで読み切る)
+        var verifier = new OthelloAI(evaluator, 20);
         int failures = 0;
 
         // 打てる手がない局面では、手を返さない
@@ -59,8 +70,8 @@ public static class TimedCheck
         TimedMoveResult first = ai.ChooseMoveTimed(InitialBoard(), TimeSpan.FromMilliseconds(2000));
         Console.WriteLine($"最初の1手(持ち時間2000ms): {first.Elapsed.TotalMilliseconds:F1}ms  深さ{first.CompletedDepth}  ノード{first.Nodes}");
 
-        Console.WriteLine($"持ち時間 {budgetMs:F0}ms、許す超過 {toleranceMs:F0}ms、1区分 {positionsPerBucket}局面、置換表 2^{ttBits}、MPC {(args.Contains("--mpc") ? "あり" : "なし")}");
-        Console.WriteLine("残りマス | 局面 | 平均ms | 最大ms | 最大の超過ms | 超過した局面 | 平均の深さ | 読み切り | 時間切れ | 不正な手 | 相手が打てない局面");
+        Console.WriteLine($"持ち時間 {budgetMs:F0}ms、許す超過 {toleranceMs:F0}ms、1区分 {positionsPerBucket}局面、置換表 2^{ttBits}({(args.Contains("--keep-tt") ? "手をまたいで残す" : "毎手空にする")})、MPC {(args.Contains("--mpc") ? "あり" : "なし")}、残り{solveEmpties}マス以下で勝敗を読む(中盤の割合 {midgameShare:F2})、勝敗の確認は残り{verifyMaxEmpties}マス以下");
+        Console.WriteLine("残りマス | 局面 | 平均ms | 最大ms | 最大の超過ms | 超過した局面 | 平均の深さ | 読み切り | 時間切れ | 不正な手 | 勝敗が分かった | 勝敗の食い違い | 相手が打てない局面");
 
         double overallMaxMs = 0;
         int overallOver = 0;
@@ -68,7 +79,7 @@ public static class TimedCheck
         foreach (int empties in emptiesList)
         {
             var random = new Random(5000 + empties);
-            int count = 0, over = 0, illegal = 0, solved = 0, timedOut = 0, passPositions = 0;
+            int count = 0, over = 0, illegal = 0, solved = 0, timedOut = 0, passPositions = 0, endgameSolved = 0, mismatches = 0;
             double sumMs = 0, maxMs = 0, sumDepth = 0;
             for (int i = 0; i < positionsPerBucket; i++)
             {
@@ -82,23 +93,41 @@ public static class TimedCheck
                 if (result.Move < 0 || ((board.GetMoves() >> result.Move) & 1UL) == 0) illegal++;
                 if (elapsedMs > budgetMs + toleranceMs) over++;
                 if (result.Solved) solved++;
+                if (result.EndgameOutcome is int outcome)
+                {
+                    endgameSolved++;
+                    if (empties <= verifyMaxEmpties && !IsOutcomeCorrect(verifier, board, result.Move, outcome)) mismatches++;
+                }
                 if (result.TimedOut) timedOut++;
                 sumMs += elapsedMs;
                 sumDepth += result.CompletedDepth;
                 maxMs = Math.Max(maxMs, elapsedMs);
                 count++;
             }
-            Console.WriteLine($"{empties,8} | {count,4} | {sumMs / count,6:F1} | {maxMs,6:F1} | {Math.Max(0, maxMs - budgetMs),12:F1} | {over,11} | {sumDepth / count,10:F1} | {solved,8} | {timedOut,8} | {illegal,8} | {passPositions,17}");
+            Console.WriteLine($"{empties,8} | {count,4} | {sumMs / count,6:F1} | {maxMs,6:F1} | {Math.Max(0, maxMs - budgetMs),12:F1} | {over,11} | {sumDepth / count,10:F1} | {solved,8} | {timedOut,8} | {illegal,8} | {endgameSolved,12} | {mismatches,14} | {passPositions,17}");
             overallMaxMs = Math.Max(overallMaxMs, maxMs);
             overallOver += over;
             overallTotal += count;
-            failures += illegal;
+            failures += illegal + mismatches;
         }
 
         Console.WriteLine($"合計 {overallTotal}局面  最大 {overallMaxMs:F1}ms  許す超過({budgetMs + toleranceMs:F0}ms)を超えた局面 {overallOver}");
         if (overallOver > 0) failures++;
         Console.WriteLine(failures == 0 ? "[OK] すべての局面で、持ち時間を守り、合法手を返した" : $"[NG] 守れなかった項目 {failures}");
         if (failures != 0) Environment.ExitCode = 1;
+    }
+
+    /// <summary>
+    /// 終盤の読みが出した結果(勝ち1・引き分け0・負け-1)が、終局まで読み切った正しい結果と同じか。
+    /// 勝ち・引き分けなら、選んだ手もその結果を保つか(負けのときは手を問わない)
+    /// </summary>
+    private static bool IsOutcomeCorrect(OthelloAI verifier, BitBoard board, int move, int outcome)
+    {
+        int exact = Math.Sign(verifier.ExactValue(board));
+        if (exact != outcome) return false;
+        if (outcome < 0) return true;
+        int afterMove = -Math.Sign(verifier.ExactValue(board.DoMove(move)));
+        return afterMove == outcome;
     }
 
     private static string? ValueOf(string[] args, string name)

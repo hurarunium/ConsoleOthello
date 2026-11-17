@@ -15,7 +15,9 @@ public partial class OthelloAI
     public OthelloAI(PatternEvaluator evaluator, int transpositionTableSizeBits = TranspositionTable.DefaultSizeBits)
     {
         _evaluator = evaluator;
+        _transpositionTableSizeBits = transpositionTableSizeBits;
         _tt = new TranspositionTable(transpositionTableSizeBits);
+        _solveTt = _tt;
     }
 
     /// <summary>
@@ -54,6 +56,12 @@ public partial class OthelloAI
     private readonly int[] _historyTable = new int[64];
 
     private readonly TranspositionTable _tt;
+    private readonly int _transpositionTableSizeBits;
+    /// <summary>
+    /// 完全読み(Solve)が使う置換表。レベルでは中盤と同じ表(手ごとに空にする)。
+    /// 持ち時間つきの探索では別の表にする(完全読みの値は中盤の評価値と尺度が違い、手をまたいで残すと混ざるため)
+    /// </summary>
+    private TranspositionTable _solveTt;
 
     // 完全読みに切り替える残り空きマス数。レベルから決める(AiLevel.PerfectSolveEmpties)
     private int _perfectSolveEmpties;
@@ -244,6 +252,7 @@ public partial class OthelloAI
             _recursionsCount++;
             PatternEvaluator.Pass(state, out EvalState passedState);
             int passScore = -NegaScout(passed, passedState, depth - 1, -beta, -alpha, ref bestMove);
+            if (_timeUp) return 0; // 時間切れの値を置換表に書かない
             _tt.Store(hash, depth, passScore, alpha, beta, -1);
             return passScore;
         }
@@ -358,6 +367,7 @@ public partial class OthelloAI
                 }
             }
 
+            if (_timeUp) return 0; // 時間切れの値を置換表に書かない
             if (score > bestScore)
             {
                 bestScore = score;
@@ -527,6 +537,7 @@ public partial class OthelloAI
         if (alpha >= beta) return alpha;
 
         if (empties <= SmallSolveEmpties) return SolveSmall(board, alpha, beta, empties);
+        if (IsTimeUp()) return 0; // 時間切れ(値は捨てられる)
 
         // 確定石で値の上限を絞る(勝ちを探しているときだけ)
         if (alpha > 0)
@@ -543,10 +554,10 @@ public partial class OthelloAI
             InfoLog($"完全読み進捗: ノード={_recursionsCount}  残り{empties}マス");
         }
 
-        ulong hash = _tt.ComputeHash(board);
+        ulong hash = _solveTt.ComputeHash(board);
         // 置換表に書く値の種類は、探索を始める前のαで決める
         int originalAlpha = alpha;
-        if (_tt.TryGet(hash, 64, alpha, beta, out int ttScore, out int ttBestMove))
+        if (_solveTt.TryGet(hash, 64, alpha, beta, out int ttScore, out int ttBestMove))
             return ttScore;
 
         ulong movesBit = board.GetMoves();
@@ -565,12 +576,12 @@ public partial class OthelloAI
         // ETC(Enhanced Transposition Cutoff): 子の局面の置換表に「上限 S ≤ -β」があれば、親は β 以上で切れる
         for (int i = 0; i < moveCount; i++)
         {
-            ulong childHash = _tt.ComputeHash(board.DoMove(moves[i]));
-            if (_tt.TryGetRaw(childHash, 64, out TTEntryType childType, out int childScore)
+            ulong childHash = _solveTt.ComputeHash(board.DoMove(moves[i]));
+            if (_solveTt.TryGetRaw(childHash, 64, out TTEntryType childType, out int childScore)
                 && childType == TTEntryType.UpperBound && -childScore >= beta)
             {
                 _abCutCount++;
-                _tt.Store(hash, 64, -childScore, originalAlpha, beta, moves[i]);
+                _solveTt.Store(hash, 64, -childScore, originalAlpha, beta, moves[i]);
                 return -childScore;
             }
         }
@@ -599,6 +610,7 @@ public partial class OthelloAI
                 }
             }
 
+            if (_timeUp) return 0; // 時間切れの値を置換表に書かない
             if (score > bestScore)
             {
                 bestScore = score;
@@ -612,7 +624,7 @@ public partial class OthelloAI
             }
         }
 
-        _tt.Store(hash, 64, bestScore, originalAlpha, beta, localBestMove);
+        _solveTt.Store(hash, 64, bestScore, originalAlpha, beta, localBestMove);
         return bestScore;
     }
 
